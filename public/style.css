@@ -1,0 +1,225 @@
+/* Custom styles for the application */
+.loading-spinner {
+    border: 2px solid #f3f4f6;
+    border-top: 2px solid #3b82f6;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    animation: spin 1s linear infinite;
+    margin: 0 auto;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.card-hover {
+    transition: all 0.2s ease-in-out;
+}
+
+.card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.icon {
+    width: 16px;
+    height: 16px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+
+.icon-lg {
+    width: 48px;
+    height: 48px;
+}
+
+.icon-md {
+    width: 20px;
+    height: 20px;
+}
+
+.btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-primary {
+    background-color: #3b82f6;
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: #2563eb;
+}
+
+.btn-success {
+    background-color: #10b981;
+    color: white;
+}
+
+.btn-success:hover {
+    background-color: #059669;
+}
+
+.btn-secondary {
+    background-color: #6b7280;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background-color: #4b5563;
+}
+
+.file-input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 2px dashed #d1d5db;
+    border-radius: 8px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.file-input:hover {
+    border-color: #3b82f6;
+    background-color: #f8fafc;
+}
+
+.search-input {
+    width: 100%;
+    padding: 8px 12px;
+    padding-left: 36px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    outline: none;
+}
+
+.search-input:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.variant-card {
+    padding: 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 8px;
+}
+
+.variant-card:hover {
+    border-color: #9ca3af;
+}
+
+.variant-card.selected {
+    border-color: #10b981;
+    background-color: #f0fdf4;
+}
+
+.variant-card.active {
+    border-color: #3b82f6;
+    background-color: #eff6ff;
+}
+
+.dfu-card {
+    padding: 12px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 8px;
+    background-color: white;
+}
+
+.dfu-card:hover {
+    border-color: #9ca3af;
+}
+
+.dfu-card.selected {
+    border-color: #3b82f6;
+    background-color: #eff6ff;
+}
+
+/* Custom scrollbar for webkit browsers */
+.scrollbar-custom::-webkit-scrollbar {
+    width: 8px;
+}
+
+.scrollbar-custom::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Firefox scrollbar */
+.scrollbar-custom {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+/* Force scrollbar to always show */
+.scrollbar-custom {
+    overflow-y: scroll !important;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .grid-responsive {
+        grid-template-columns: 1fr !important;
+    }
+    
+    .flex-responsive {
+        flex-direction: column;
+        gap: 16px;
+    }
+}
+
+.notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 16px;
+    border-radius: 8px;
+    color: white;
+    font-weight: 500;
+    z-index: 1000;
+    animation: slideIn 0.3s ease-out;
+}
+
+.notification.success {
+    background-color: #10b981;
+}
+
+.notification.error {
+    background-color: #ef4444;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}

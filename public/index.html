@@ -3,106 +3,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DFU Transfer - Multi User</title>
-    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+    <title>DFU Demand Transfer Management - Multi User</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
 </head>
 <body class="bg-gray-100">
-    <!-- Login Screen -->
-    <div id="loginScreen" class="min-h-screen flex items-center justify-center">
-        <div class="bg-white p-8 rounded-lg shadow-lg w-96">
-            <h1 class="text-2xl font-bold mb-6 text-center">DFU Transfer System</h1>
-            <div class="space-y-4">
-                <input 
-                    type="text" 
-                    id="sessionName" 
-                    placeholder="Session Name (e.g., Team1)" 
-                    class="w-full p-3 border rounded-lg"
-                >
-                <input 
-                    type="text" 
-                    id="userName" 
-                    placeholder="Your Name" 
-                    class="w-full p-3 border rounded-lg"
-                >
-                <button 
-                    onclick="joinSession()" 
-                    class="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700"
-                >
-                    Join Session
-                </button>
-            </div>
-            <div id="loginError" class="mt-4 text-red-600 text-sm hidden"></div>
+    <!-- Session Login Modal -->
+    <div id="sessionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96">
+            <h2 class="text-xl font-bold mb-4">Join or Create Session</h2>
+            <input type="text" id="sessionName" placeholder="Session Name" class="w-full mb-3 p-2 border rounded">
+            <input type="text" id="userName" placeholder="Your Name" class="w-full mb-3 p-2 border rounded">
+            <button id="joinSessionBtn" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">
+                Join Session
+            </button>
         </div>
     </div>
-
-    <!-- Main App (Hidden Initially) -->
-    <div id="mainApp" class="hidden">
-        <!-- Header -->
-        <div class="bg-white shadow-sm border-b">
-            <div class="max-w-7xl mx-auto px-4 py-4">
-                <div class="flex justify-between items-center">
-                    <div>
-                        <h1 class="text-2xl font-bold">DFU Transfer System</h1>
-                        <p class="text-sm text-gray-600">
-                            Session: <span id="sessionNameDisplay" class="font-medium"></span> | 
-                            User: <span id="userNameDisplay" class="font-medium"></span>
-                        </p>
-                    </div>
-                    <div class="flex gap-4">
-                        <div id="activeUsersDisplay" class="text-sm text-gray-600"></div>
-                        <button 
-                            onclick="location.reload()" 
-                            class="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
-                        >
-                            Leave Session
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main Content -->
-        <div class="max-w-7xl mx-auto px-4 py-6">
-            <!-- Upload Section -->
-            <div id="uploadSection" class="bg-white rounded-lg shadow p-6 mb-6">
-                <h2 class="text-lg font-semibold mb-4">Step 1: Upload Excel File</h2>
-                <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                    <input type="file" id="fileInput" accept=".xlsx,.xls" class="hidden">
-                    <button 
-                        onclick="document.getElementById('fileInput').click()" 
-                        class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                    >
-                        Choose Excel File
-                    </button>
-                    <p class="mt-2 text-sm text-gray-600">or drag and drop your file here</p>
-                </div>
-                <div id="uploadStatus" class="mt-4"></div>
-            </div>
-
-            <!-- DFU List -->
-            <div id="dfuSection" class="bg-white rounded-lg shadow p-6 hidden">
-                <h2 class="text-lg font-semibold mb-4">Step 2: Configure Transfers</h2>
-                <div id="dfuList" class="space-y-4"></div>
-            </div>
-
-            <!-- Generate File -->
-            <div id="generateSection" class="bg-white rounded-lg shadow p-6 mt-6 hidden">
-                <h2 class="text-lg font-semibold mb-4">Step 3: Generate Final File</h2>
-                <button 
-                    onclick="generateFile()" 
-                    class="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                >
-                    Download Updated Excel File
-                </button>
-            </div>
-        </div>
+    
+    <!-- Active Users Panel -->
+    <div id="activeUsersPanel" class="fixed right-4 top-4 bg-white rounded-lg shadow-lg p-4 w-64 hidden z-40">
+        <h3 class="font-semibold mb-2">Active Users</h3>
+        <div id="activeUsersList"></div>
     </div>
-
-    <!-- Notifications -->
-    <div id="notifications" class="fixed bottom-4 right-4 space-y-2"></div>
-
-    <script src="app.js"></script>
+    
+    <!-- Main App Container -->
+    <div id="app"></div>
+    
+    <script src="script.js"></script>
+    <script src="multi-user-adapter.js"></script>
 </body>
 </html>
