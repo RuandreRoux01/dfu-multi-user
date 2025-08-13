@@ -8,6 +8,80 @@
     <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <style>
+        /* Notification container styles */
+        #notifications {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 400px;
+        }
+        
+        /* Notification animation */
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+        }
+        
+        .notification-enter {
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        .notification-exit {
+            animation: slideOut 0.3s ease-out;
+        }
+        
+        /* Adjust main content to account for active users panel */
+        #mainContent {
+            padding-right: 280px; /* Make room for the active users panel */
+        }
+        
+        /* Active users panel - now on the right side */
+        #activeUsersPanel {
+            position: fixed;
+            right: 20px;
+            top: 80px;
+            width: 250px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 1024px) {
+            #mainContent {
+                padding-right: 20px;
+            }
+            
+            #activeUsersPanel {
+                position: relative;
+                right: auto;
+                top: auto;
+                width: 100%;
+                margin-bottom: 20px;
+            }
+        }
+    </style>
     <script>
         // Prevent the original app from auto-initializing
         window.preventAutoInit = true;
@@ -26,17 +100,22 @@
         </div>
     </div>
     
-    <!-- Active Users Panel with End Session Button -->
-    <div id="activeUsersPanel" class="fixed right-4 top-4 bg-white rounded-lg shadow-lg p-4 w-64 hidden z-40">
+    <!-- Notifications Container -->
+    <div id="notifications"></div>
+    
+    <!-- Active Users Panel (moved to right side) -->
+    <div id="activeUsersPanel" class="bg-white rounded-lg shadow-lg p-4 hidden z-40">
         <h3 class="font-semibold mb-2">Active Users</h3>
-        <div id="activeUsersList" class="mb-4"></div>
+        <div id="activeUsersList" class="mb-4 text-sm"></div>
         <button onclick="endSession()" class="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 text-sm">
             End Session & Clear Data
         </button>
     </div>
     
-    <!-- Main App Container -->
-    <div id="app"></div>
+    <!-- Main App Container with padding for active users panel -->
+    <div id="mainContent">
+        <div id="app"></div>
+    </div>
     
     <script src="script.js"></script>
     <script>
@@ -45,6 +124,7 @@
         let sessionId = null;
         let userName = null;
         let socket = null;
+        let notificationCount = 0;
         
         async function handleJoinSession() {
             console.log('handleJoinSession called');
@@ -96,6 +176,8 @@
                     
                     // Load session data
                     loadSessionData();
+                    
+                    showNotification('Successfully joined session!', 'success');
                 }
             } catch (error) {
                 console.error('Error joining session:', error);
@@ -111,7 +193,7 @@
             }
             
             try {
-                // Call the clear endpoint
+                // Call the end session endpoint
                 const response = await fetch(`/api/session/${sessionId}/end`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -131,6 +213,53 @@
             }
         }
         
+        function showNotification(message, type = 'info') {
+            const notificationsContainer = document.getElementById('notifications');
+            const notification = document.createElement('div');
+            
+            // Assign unique ID
+            const notificationId = `notification-${++notificationCount}`;
+            notification.id = notificationId;
+            
+            // Style based on type
+            const colors = {
+                success: 'bg-green-500',
+                error: 'bg-red-500',
+                info: 'bg-blue-500',
+                warning: 'bg-yellow-500'
+            };
+            
+            notification.className = `${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg notification-enter`;
+            notification.innerHTML = `
+                <div class="flex items-center justify-between">
+                    <span>${message}</span>
+                    <button onclick="closeNotification('${notificationId}')" class="ml-4 text-white hover:text-gray-200">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            `;
+            
+            notificationsContainer.appendChild(notification);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                closeNotification(notificationId);
+            }, 5000);
+        }
+        
+        function closeNotification(notificationId) {
+            const notification = document.getElementById(notificationId);
+            if (notification) {
+                notification.classList.remove('notification-enter');
+                notification.classList.add('notification-exit');
+                setTimeout(() => {
+                    notification.remove();
+                }, 300);
+            }
+        }
+        
         function setupMultiUserFeatures() {
             if (!appInstance) return;
             
@@ -144,32 +273,31 @@
             
             socket.on('userJoined', ({ userName: newUser }) => {
                 console.log('User joined:', newUser);
-                if (appInstance.showNotification) {
-                    appInstance.showNotification(`${newUser} joined the session`, 'info');
-                }
+                showNotification(`${newUser} joined the session`, 'info');
             });
             
             socket.on('activeUsers', (users) => {
                 const usersList = document.getElementById('activeUsersList');
                 if (usersList) {
-                    usersList.innerHTML = users.map(u => `<div class="text-sm py-1">${u}</div>`).join('');
+                    usersList.innerHTML = users.map(u => `
+                        <div class="text-sm py-1 flex items-center">
+                            <span class="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+                            ${u}
+                        </div>
+                    `).join('');
                 }
             });
             
             socket.on('dataUploaded', () => {
                 console.log('Data uploaded by another user');
-                if (appInstance.showNotification) {
-                    appInstance.showNotification('Another user uploaded data', 'info');
-                }
+                showNotification('Another user uploaded data', 'info');
                 loadSessionData();
             });
             
             socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
                 console.log('Data updated by another user:', updatedBy);
                 if (updatedBy !== userName) {
-                    if (appInstance.showNotification) {
-                        appInstance.showNotification(`${updatedBy} completed transfer for DFU ${dfuCode}`, 'info');
-                    }
+                    showNotification(`${updatedBy} completed transfer for DFU ${dfuCode}`, 'info');
                     // Reload data to get the latest changes
                     loadSessionData();
                 }
@@ -200,21 +328,21 @@
                     const result = await response.json();
                     
                     if (result.success) {
-                        this.showNotification(`Successfully uploaded ${result.rowCount} records`);
+                        showNotification(`Successfully uploaded ${result.rowCount} records`, 'success');
                         await loadSessionData();
                     } else {
-                        this.showNotification('Failed to upload file', 'error');
+                        showNotification('Failed to upload file: ' + result.error, 'error');
                     }
                 } catch (error) {
                     console.error('Error uploading:', error);
-                    this.showNotification('Upload failed', 'error');
+                    showNotification('Upload failed: ' + error.message, 'error');
                 } finally {
                     this.isLoading = false;
                     this.render();
                 }
             };
             
-            // DON'T override executeTransfer - let it work normally on client side
+            // Override executeTransfer - let it work normally on client side
             // Just save the modified data after execution
             const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
             appInstance.executeTransfer = function(dfuCode) {
@@ -251,11 +379,11 @@
                     }).then(response => response.json())
                       .then(data => {
                           console.log('Data saved to server:', data);
-                          this.showNotification('Transfer completed and saved', 'success');
+                          showNotification('Transfer completed and saved', 'success');
                       })
                       .catch(error => {
                           console.error('Error saving data:', error);
-                          this.showNotification('Transfer completed locally but failed to save to server', 'warning');
+                          showNotification('Transfer completed locally but failed to save to server', 'warning');
                       });
                 }, 500);
             };
@@ -302,13 +430,16 @@
                         a.href = url;
                         a.download = `DFU_Transfers_${sessionId}_${Date.now()}.xlsx`;
                         a.click();
-                        this.showNotification('File exported successfully');
+                        showNotification('File exported successfully', 'success');
                     }
                 } catch (error) {
                     console.error('Error exporting:', error);
-                    this.showNotification('Export failed', 'error');
+                    showNotification('Export failed', 'error');
                 }
             };
+            
+            // Override showNotification to use our custom notification system
+            appInstance.showNotification = showNotification;
         }
         
         async function loadSessionData() {
@@ -333,6 +464,7 @@
                 }
             } catch (error) {
                 console.error('Error loading session data:', error);
+                showNotification('Failed to load session data', 'error');
             }
         }
         
