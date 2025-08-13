@@ -168,7 +168,39 @@
                     this.render();
                 }
             };
-            
+            // Add this after the loadData override in setupMultiUserFeatures function
+const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
+appInstance.executeTransfer = function(dfuCode) {
+    console.log('Multi-user executeTransfer');
+    
+    // Execute locally first
+    originalExecuteTransfer(dfuCode);
+    
+    // Then save to server
+    const transferConfig = {
+        type: this.bulkTransfers[dfuCode] ? 'bulk' : 'individual',
+        targetVariant: this.bulkTransfers[dfuCode],
+        transfers: this.transfers[dfuCode]
+    };
+    
+    fetch(`/api/session/${sessionId}/transfer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            dfuCode,
+            transferConfig,
+            userName
+        })
+    }).then(response => response.json())
+      .then(data => {
+          console.log('Transfer saved to server:', data);
+          this.showNotification('Transfer saved to server', 'success');
+      })
+      .catch(error => {
+          console.error('Error saving transfer:', error);
+          this.showNotification('Failed to save transfer to server', 'error');
+      });
+};
             // Override exportData method
             appInstance.exportData = async function() {
                 console.log('Multi-user exportData');
