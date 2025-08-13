@@ -17,9 +17,17 @@ const io = socketIo(server, {
     }
 });
 
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // Increase limit for large data
 app.use(express.static('public'));
+
+// Debug middleware for API routes
+app.use('/api', (req, res, next) => {
+    console.log(`🔍 API Request: ${req.method} ${req.path}`);
+    console.log(`🔍 Full URL: ${req.originalUrl}`);
+    next();
+});
 
 // MongoDB connection
 let db;
@@ -86,20 +94,24 @@ app.post('/api/session/join', async (req, res) => {
                 users: [],
                 dataUploaded: false,
                 rawData: null,
+                completedTransfers: {},
                 status: 'active'
             };
             await db.collection('sessions').insertOne(session);
             console.log(`📁 New session created: ${sessionName} with ID: ${sessionId}`);
         }
         
-        // Add user to session
-        const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        await db.collection('sessions').updateOne(
-            { _id: session._id },
-            { 
-                $push: { users: { id: userId, name: userName, joinedAt: new Date() } }
-            }
-        );
+        // Add user to session if not already present
+        const existingUser = session.users.find(u => u.name === userName);
+        if (!existingUser) {
+            const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            await db.collection('sessions').updateOne(
+                { _id: session._id },
+                { 
+                    $push: { users: { id: userId, name: userName, joinedAt: new Date() } }
+                }
+            );
+        }
         
         console.log(`👤 ${userName} joined session: ${sessionName}`);
         
@@ -107,7 +119,7 @@ app.post('/api/session/join', async (req, res) => {
             success: true,
             sessionId: session._id,
             sessionName: session.name,
-            userId: userId
+            userId: existingUser ? existingUser.id : `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
         });
     } catch (error) {
         console.error('Error joining session:', error);
@@ -142,7 +154,8 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
                 $set: { 
                     rawData: data,
                     dataUploaded: true,
-                    uploadedAt: new Date()
+                    uploadedAt: new Date(),
+                    completedTransfers: {} // Reset completed transfers on new upload
                 }
             }
         );
@@ -169,8 +182,6 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
 });
 
 // Get session data
-// Get session data (FIND AND REPLACE THIS ENDPOINT)
-// Get session data (FIND AND REPLACE THIS ENDPOINT)
 app.get('/api/session/:sessionId/data', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -209,7 +220,7 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
             multiVariantDFUs,
             transfers,
             rawData: session.rawData || [],
-            completedTransfers: session.completedTransfers || {} // Include completed transfers status
+            completedTransfers: session.completedTransfers || {}
         });
         
     } catch (error) {
@@ -218,7 +229,7 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
     }
 });
 
-// Save transfer configuration (this might already exist, you can keep it)
+// Save transfer configuration
 app.post('/api/session/:sessionId/transfer', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -251,7 +262,7 @@ app.post('/api/session/:sessionId/transfer', async (req, res) => {
     }
 });
 
-// Update session data after client-side transfer (REPLACE IF EXISTS)
+// Update session data after client-side transfer
 app.post('/api/session/:sessionId/updateData', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -265,7 +276,7 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
             { 
                 $set: { 
                     rawData: rawData,
-                    completedTransfers: completedTransfers, // Store completed transfers status
+                    completedTransfers: completedTransfers,
                     lastModified: new Date(),
                     lastModifiedBy: transfer.completedBy
                 }
@@ -295,11 +306,11 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
         
     } catch (error) {
         console.error('Error updating data:', error);
-        res.status(500).json({ error: 'Failed to update data' });
+        res.status(500).json({ error: 'Failed to update data: ' + error.message });
     }
 });
 
-// Export current data without modifications (REPLACE IF EXISTS)
+// Export current data
 app.post('/api/session/:sessionId/export', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -327,11 +338,11 @@ app.post('/api/session/:sessionId/export', async (req, res) => {
         
     } catch (error) {
         console.error('Error exporting file:', error);
-        res.status(500).json({ error: 'Failed to export file' });
+        res.status(500).json({ error: 'Failed to export file: ' + error.message });
     }
 });
 
-// Clear session data (optional endpoint - keep if you have it)
+// Clear session data
 app.post('/api/session/:sessionId/clear', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -345,7 +356,8 @@ app.post('/api/session/:sessionId/clear', async (req, res) => {
             { 
                 $set: { 
                     rawData: null,
-                    dataUploaded: false
+                    dataUploaded: false,
+                    completedTransfers: {}
                 }
             }
         );
@@ -353,13 +365,16 @@ app.post('/api/session/:sessionId/clear', async (req, res) => {
         console.log(`🗑️ Cleared data for session: ${sessionId}`);
         res.json({ success: true });
         
+        // Notify all connected users
+        io.to(sessionId).emit('dataCleared');
+        
     } catch (error) {
         console.error('Error clearing session:', error);
-        res.status(500).json({ error: 'Failed to clear session' });
+        res.status(500).json({ error: 'Failed to clear session: ' + error.message });
     }
 });
 
-// End session and clear all data (NEW ENDPOINT - ADD THIS)
+// End session and clear all data
 app.post('/api/session/:sessionId/end', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -384,6 +399,17 @@ app.post('/api/session/:sessionId/end', async (req, res) => {
         console.error('Error ending session:', error);
         res.status(500).json({ error: 'Failed to end session: ' + error.message });
     }
+});
+
+// Catch-all for unmatched API routes (for debugging)
+app.get('/api/*', (req, res) => {
+    console.log(`❌ Unmatched API route: ${req.originalUrl}`);
+    res.status(404).json({ error: `Route not found: ${req.originalUrl}` });
+});
+
+app.post('/api/*', (req, res) => {
+    console.log(`❌ Unmatched API POST route: ${req.originalUrl}`);
+    res.status(404).json({ error: `Route not found: ${req.originalUrl}` });
 });
 
 // ============= WEBSOCKET HANDLING =============
@@ -416,8 +442,12 @@ io.on('connection', (socket) => {
             const sessionUsers = activeSessions.get(socket.sessionId);
             if (sessionUsers) {
                 sessionUsers.delete(socket.userName);
-                io.to(socket.sessionId).emit('activeUsers', Array.from(sessionUsers));
-                console.log(`👋 ${socket.userName} disconnected`);
+                if (sessionUsers.size === 0) {
+                    activeSessions.delete(socket.sessionId);
+                } else {
+                    io.to(socket.sessionId).emit('activeUsers', Array.from(sessionUsers));
+                }
+                console.log(`👋 ${socket.userName} disconnected from ${socket.sessionId}`);
             }
         }
     });
@@ -491,8 +521,8 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`
     🚀 Server is running!
-    📍 Local: http://localhost:3000
-    📍 Network: http://[your-computer-ip]:3000
+    📍 Local: http://localhost:${PORT}
+    📍 Network: http://[your-computer-ip]:${PORT}
     
     Waiting for MongoDB connection...
     `);
