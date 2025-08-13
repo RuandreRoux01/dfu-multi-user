@@ -2028,5 +2028,8 @@ class DemandTransferApp {
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new DemandTransferApp();
+    // Only auto-initialize if not in multi-user mode
+    if (!window.preventAutoInit) {
+        new DemandTransferApp();
+    }
 });

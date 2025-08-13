@@ -8,6 +8,10 @@
     <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
+    <script>
+        // Prevent the original app from auto-initializing
+        window.preventAutoInit = true;
+    </script>
 </head>
 <body class="bg-gray-100">
     <!-- Session Login Modal -->
@@ -16,7 +20,7 @@
             <h2 class="text-xl font-bold mb-4">Join or Create Session</h2>
             <input type="text" id="sessionName" placeholder="Session Name" class="w-full mb-3 p-2 border rounded">
             <input type="text" id="userName" placeholder="Your Name" class="w-full mb-3 p-2 border rounded">
-            <button id="joinSessionBtn" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">
+            <button id="joinSessionBtn" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700" onclick="handleJoinSession()">
                 Join Session
             </button>
         </div>
@@ -32,6 +36,188 @@
     <div id="app"></div>
     
     <script src="script.js"></script>
-    <script src="multi-user-adapter.js"></script>
+    <script>
+        // Global function to handle join session
+        let appInstance = null;
+        let sessionId = null;
+        let userName = null;
+        let socket = null;
+        
+        async function handleJoinSession() {
+            console.log('handleJoinSession called');
+            
+            const sessionNameInput = document.getElementById('sessionName').value.trim();
+            const userNameInput = document.getElementById('userName').value.trim();
+            
+            if (!sessionNameInput || !userNameInput) {
+                alert('Please enter both session name and your name');
+                return;
+            }
+            
+            const joinBtn = document.getElementById('joinSessionBtn');
+            joinBtn.disabled = true;
+            joinBtn.textContent = 'Joining...';
+            
+            try {
+                // Call the API to join session
+                const response = await fetch('/api/session/join', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        sessionName: sessionNameInput, 
+                        userName: userNameInput 
+                    })
+                });
+                
+                const data = await response.json();
+                console.log('Join response:', data);
+                
+                if (data.success) {
+                    sessionId = data.sessionId;
+                    userName = userNameInput;
+                    
+                    // Hide modal
+                    document.getElementById('sessionModal').style.display = 'none';
+                    
+                    // Show active users panel
+                    document.getElementById('activeUsersPanel').classList.remove('hidden');
+                    
+                    // Initialize the app if not already initialized
+                    if (!appInstance) {
+                        console.log('Creating new DemandTransferApp instance');
+                        appInstance = new DemandTransferApp();
+                    }
+                    
+                    // Set up multi-user features
+                    setupMultiUserFeatures();
+                    
+                    // Load session data
+                    loadSessionData();
+                }
+            } catch (error) {
+                console.error('Error joining session:', error);
+                alert('Failed to join session: ' + error.message);
+                joinBtn.disabled = false;
+                joinBtn.textContent = 'Join Session';
+            }
+        }
+        
+        function setupMultiUserFeatures() {
+            if (!appInstance) return;
+            
+            // Connect WebSocket
+            socket = io();
+            
+            socket.on('connect', () => {
+                console.log('WebSocket connected');
+                socket.emit('joinSession', { sessionId, userName });
+            });
+            
+            socket.on('userJoined', ({ userName: newUser }) => {
+                console.log('User joined:', newUser);
+                if (appInstance.showNotification) {
+                    appInstance.showNotification(`${newUser} joined the session`, 'info');
+                }
+            });
+            
+            socket.on('activeUsers', (users) => {
+                const usersList = document.getElementById('activeUsersList');
+                if (usersList) {
+                    usersList.innerHTML = users.map(u => `<div class="text-sm py-1">${u}</div>`).join('');
+                }
+            });
+            
+            socket.on('dataUploaded', () => {
+                console.log('Data uploaded by another user');
+                if (appInstance.showNotification) {
+                    appInstance.showNotification('Another user uploaded data', 'info');
+                }
+                loadSessionData();
+            });
+            
+            // Override loadData method
+            const originalLoadData = appInstance.loadData.bind(appInstance);
+            appInstance.loadData = async function(file) {
+                console.log('Multi-user loadData');
+                
+                this.isLoading = true;
+                this.render();
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const response = await fetch(`/api/upload/${sessionId}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        this.showNotification(`Successfully uploaded ${result.rowCount} records`);
+                        await loadSessionData();
+                    } else {
+                        this.showNotification('Failed to upload file', 'error');
+                    }
+                } catch (error) {
+                    console.error('Error uploading:', error);
+                    this.showNotification('Upload failed', 'error');
+                } finally {
+                    this.isLoading = false;
+                    this.render();
+                }
+            };
+            
+            // Override exportData method
+            appInstance.exportData = async function() {
+                console.log('Multi-user exportData');
+                
+                try {
+                    const response = await fetch(`/api/session/${sessionId}/generate`, {
+                        method: 'POST'
+                    });
+                    
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `DFU_Transfers_${Date.now()}.xlsx`;
+                        a.click();
+                        this.showNotification('File exported successfully');
+                    }
+                } catch (error) {
+                    console.error('Error exporting:', error);
+                    this.showNotification('Export failed', 'error');
+                }
+            };
+        }
+        
+        async function loadSessionData() {
+            if (!appInstance || !sessionId) return;
+            
+            try {
+                const response = await fetch(`/api/session/${sessionId}/data`);
+                const data = await response.json();
+                
+                if (data.rawData && data.rawData.length > 0) {
+                    appInstance.rawData = data.rawData;
+                    appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
+                    appInstance.processMultiVariantDFUs(data.rawData);
+                    appInstance.isProcessed = true;
+                    appInstance.render();
+                }
+            } catch (error) {
+                console.error('Error loading session data:', error);
+            }
+        }
+        
+        // Modify the DemandTransferApp to not auto-initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            // The app will be created only after joining a session
+            console.log('DOM ready, waiting for session join...');
+        });
+    </script>
 </body>
 </html>
