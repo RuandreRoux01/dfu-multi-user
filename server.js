@@ -102,7 +102,7 @@ app.post('/api/session/join', async (req, res) => {
         }
         
         // Add user to session if not already present
-        const existingUser = session.users.find(u => u.name === userName);
+        const existingUser = session.users ? session.users.find(u => u.name === userName) : null;
         if (!existingUser) {
             const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             await db.collection('sessions').updateOne(
@@ -127,7 +127,7 @@ app.post('/api/session/join', async (req, res) => {
     }
 });
 
-// Upload Excel file
+// Upload Excel file - IMPROVED
 app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -138,6 +138,12 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
         }
         
         console.log(`📤 Processing uploaded file for session: ${sessionId}`);
+        
+        // Check if session exists
+        const sessionExists = await db.collection('sessions').findOne({ _id: sessionId });
+        if (!sessionExists) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
         
         // Parse Excel file
         const workbook = XLSX.read(file.buffer, { type: 'buffer' });
@@ -162,6 +168,10 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
         
         console.log(`📝 Update result: ${updateResult.modifiedCount} document(s) modified`);
         
+        if (updateResult.modifiedCount === 0) {
+            console.warn('⚠️ No documents were modified - session might not exist');
+        }
+        
         // Process multi-variant DFUs for summary
         const multiVariantDFUs = processMultiVariantDFUs(data);
         console.log(`🔍 Found ${Object.keys(multiVariantDFUs).length} multi-variant DFUs`);
@@ -173,7 +183,10 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
         });
         
         // Notify all connected clients
-        io.to(sessionId).emit('dataUploaded', { dfuCount: Object.keys(multiVariantDFUs).length });
+        io.to(sessionId).emit('dataUploaded', { 
+            dfuCount: Object.keys(multiVariantDFUs).length,
+            uploadedBy: req.body.userName || 'Unknown User'
+        });
         
     } catch (error) {
         console.error('Error uploading file:', error);
@@ -181,12 +194,18 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
     }
 });
 
-// Get session data - UPDATED WITH completedTransfers
+// Get session data - IMPROVED ERROR HANDLING
 app.get('/api/session/:sessionId/data', async (req, res) => {
     try {
         const { sessionId } = req.params;
         
         console.log(`📊 Getting data for session: ${sessionId}`);
+        
+        // Check if database is connected
+        if (!db) {
+            console.error('❌ Database not connected');
+            return res.status(500).json({ error: 'Database not connected' });
+        }
         
         const session = await db.collection('sessions').findOne({ 
             _id: sessionId
@@ -194,10 +213,23 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
         
         if (!session) {
             console.log(`❌ Session not found: ${sessionId}`);
-            return res.status(404).json({ error: 'Session not found' });
+            // Instead of 404, return empty data structure
+            return res.json({
+                session: {
+                    name: 'Session Not Found',
+                    dataUploaded: false,
+                    userCount: 0
+                },
+                multiVariantDFUs: {},
+                transfers: [],
+                rawData: [],
+                completedTransfers: {}
+            });
         }
         
         console.log(`✅ Found session: ${session.name}`);
+        console.log(`📋 Data uploaded: ${session.dataUploaded || false}`);
+        console.log(`📊 Raw data records: ${session.rawData ? session.rawData.length : 0}`);
         
         // Process multi-variant DFUs if data exists
         let multiVariantDFUs = {};
@@ -211,25 +243,38 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
             sessionId: sessionId 
         }).toArray();
         
+        console.log(`📋 Found ${transfers.length} transfers for session`);
+        
         res.json({
             session: {
                 name: session.name,
                 dataUploaded: session.dataUploaded || false,
                 userCount: session.users ? session.users.length : 0
             },
-            multiVariantDFUs,
-            transfers,
+            multiVariantDFUs: multiVariantDFUs || {},
+            transfers: transfers || [],
             rawData: session.rawData || [],
-            completedTransfers: session.completedTransfers || {} // Include completed transfers status
+            completedTransfers: session.completedTransfers || {}
         });
         
     } catch (error) {
         console.error('Error getting session data:', error);
-        res.status(500).json({ error: 'Failed to get session data: ' + error.message });
+        // Return empty structure instead of error
+        res.json({
+            session: {
+                name: 'Error Loading Session',
+                dataUploaded: false,
+                userCount: 0
+            },
+            multiVariantDFUs: {},
+            transfers: [],
+            rawData: [],
+            completedTransfers: {}
+        });
     }
 });
 
-// Save transfer configuration (this might already exist, you can keep it)
+// Save transfer configuration
 app.post('/api/session/:sessionId/transfer', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -262,7 +307,7 @@ app.post('/api/session/:sessionId/transfer', async (req, res) => {
     }
 });
 
-// Update session data after client-side transfer - PROPERLY PLACED
+// Update session data after client-side transfer
 app.post('/api/session/:sessionId/updateData', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -276,7 +321,7 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
             { 
                 $set: { 
                     rawData: rawData,
-                    completedTransfers: completedTransfers, // Store completed transfers status
+                    completedTransfers: completedTransfers,
                     lastModified: new Date(),
                     lastModifiedBy: transfer.completedBy
                 }
@@ -310,7 +355,7 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
     }
 });
 
-// Export current data without modifications - PROPERLY PLACED
+// Export current data
 app.post('/api/session/:sessionId/export', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -342,7 +387,7 @@ app.post('/api/session/:sessionId/export', async (req, res) => {
     }
 });
 
-// Clear session data (optional endpoint - keep if you have it)
+// Clear session data
 app.post('/api/session/:sessionId/clear', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -374,7 +419,7 @@ app.post('/api/session/:sessionId/clear', async (req, res) => {
     }
 });
 
-// End session and clear all data - NEW ENDPOINT
+// End session and clear all data
 app.post('/api/session/:sessionId/end', async (req, res) => {
     try {
         const { sessionId } = req.params;
