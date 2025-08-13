@@ -37,7 +37,7 @@
     
     <script src="script.js"></script>
     <script>
-        // Global function to handle join session
+        // Global variables
         let appInstance = null;
         let sessionId = null;
         let userName = null;
@@ -135,7 +135,18 @@
                 loadSessionData();
             });
             
-            // Override loadData method
+            socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
+                console.log('Data updated by another user:', updatedBy);
+                if (updatedBy !== userName) {
+                    if (appInstance.showNotification) {
+                        appInstance.showNotification(`${updatedBy} completed transfer for DFU ${dfuCode}`, 'info');
+                    }
+                    // Reload data to get the latest changes
+                    loadSessionData();
+                }
+            });
+            
+            // Override loadData method - upload file and let client process it
             const originalLoadData = appInstance.loadData.bind(appInstance);
             appInstance.loadData = async function(file) {
                 console.log('Multi-user loadData');
@@ -168,46 +179,82 @@
                     this.render();
                 }
             };
-            // Add this after the loadData override in setupMultiUserFeatures function
-const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
-appInstance.executeTransfer = function(dfuCode) {
-    console.log('Multi-user executeTransfer');
-    
-    // Execute locally first
-    originalExecuteTransfer(dfuCode);
-    
-    // Then save to server
-    const transferConfig = {
-        type: this.bulkTransfers[dfuCode] ? 'bulk' : 'individual',
-        targetVariant: this.bulkTransfers[dfuCode],
-        transfers: this.transfers[dfuCode]
-    };
-    
-    fetch(`/api/session/${sessionId}/transfer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            dfuCode,
-            transferConfig,
-            userName
-        })
-    }).then(response => response.json())
-      .then(data => {
-          console.log('Transfer saved to server:', data);
-          this.showNotification('Transfer saved to server', 'success');
-      })
-      .catch(error => {
-          console.error('Error saving transfer:', error);
-          this.showNotification('Failed to save transfer to server', 'error');
-      });
-};
-            // Override exportData method
+            
+            // DON'T override executeTransfer - let it work normally on client side
+            // Just save the modified data after execution
+            const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
+            appInstance.executeTransfer = function(dfuCode) {
+                console.log('Executing transfer with original logic');
+                
+                // Execute with original logic (this modifies this.rawData)
+                originalExecuteTransfer(dfuCode);
+                
+                // After execution, save the modified rawData to server
+                setTimeout(() => {
+                    console.log('Saving modified data to server after transfer');
+                    
+                    // Save the entire modified dataset back to server
+                    fetch(`/api/session/${sessionId}/updateData`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            rawData: this.rawData,
+                            transfer: {
+                                dfuCode,
+                                type: this.bulkTransfers[dfuCode] ? 'bulk' : 
+                                      (this.granularTransfers[dfuCode] && Object.keys(this.granularTransfers[dfuCode]).length > 0) ? 'granular' : 
+                                      'individual',
+                                targetVariant: this.bulkTransfers[dfuCode],
+                                transfers: this.transfers[dfuCode],
+                                granularTransfers: this.granularTransfers[dfuCode],
+                                completedBy: userName
+                            }
+                        })
+                    }).then(response => response.json())
+                      .then(data => {
+                          console.log('Data saved to server:', data);
+                          this.showNotification('Transfer completed and saved', 'success');
+                      })
+                      .catch(error => {
+                          console.error('Error saving data:', error);
+                          this.showNotification('Transfer completed locally but failed to save to server', 'warning');
+                      });
+                }, 500);
+            };
+            
+            // Override exportData method - just download the current rawData
             appInstance.exportData = async function() {
                 console.log('Multi-user exportData');
                 
                 try {
-                    const response = await fetch(`/api/session/${sessionId}/generate`, {
-                        method: 'POST'
+                    // Use the original export logic to format dates properly
+                    const formattedData = this.rawData.map(record => {
+                        const formattedRecord = { ...record };
+                        
+                        // Format Calendar.week if it exists
+                        if (formattedRecord['Calendar.week']) {
+                            const dateValue = formattedRecord['Calendar.week'];
+                            if (dateValue) {
+                                const date = new Date(dateValue);
+                                if (!isNaN(date.getTime())) {
+                                    const year = date.getFullYear();
+                                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                                    const day = String(date.getDate()).padStart(2, '0');
+                                    formattedRecord['Calendar.week'] = `${year}-${month}-${day}`;
+                                }
+                            }
+                        }
+                        
+                        return formattedRecord;
+                    });
+                    
+                    // Send formatted data to server for export
+                    const response = await fetch(`/api/session/${sessionId}/export`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            rawData: formattedData
+                        })
                     });
                     
                     if (response.ok) {
@@ -215,7 +262,7 @@ appInstance.executeTransfer = function(dfuCode) {
                         const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = `DFU_Transfers_${Date.now()}.xlsx`;
+                        a.download = `DFU_Transfers_${sessionId}_${Date.now()}.xlsx`;
                         a.click();
                         this.showNotification('File exported successfully');
                     }

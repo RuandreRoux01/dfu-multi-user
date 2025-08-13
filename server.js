@@ -18,7 +18,7 @@ const io = socketIo(server, {
 });
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increase limit for large data
 app.use(express.static('public'));
 
 // MongoDB connection
@@ -51,7 +51,7 @@ async function initializeCollections() {
 const storage = multer.memoryStorage();
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
 });
 
 // Store active sessions in memory
@@ -80,7 +80,7 @@ app.post('/api/session/join', async (req, res) => {
             // Create new session with a simple string ID
             const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             session = {
-                _id: sessionId,  // Use string ID instead of ObjectId
+                _id: sessionId,
                 name: sessionName,
                 createdAt: new Date(),
                 users: [],
@@ -135,9 +135,9 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
         
         console.log(`📊 Parsed ${data.length} rows from Excel file`);
         
-        // Store raw data in session - use sessionId as string
+        // Store raw data in session
         const updateResult = await db.collection('sessions').updateOne(
-            { _id: sessionId },  // sessionId is already a string
+            { _id: sessionId },
             { 
                 $set: { 
                     rawData: data,
@@ -149,7 +149,7 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
         
         console.log(`📝 Update result: ${updateResult.modifiedCount} document(s) modified`);
         
-        // Process multi-variant DFUs
+        // Process multi-variant DFUs for summary
         const multiVariantDFUs = processMultiVariantDFUs(data);
         console.log(`🔍 Found ${Object.keys(multiVariantDFUs).length} multi-variant DFUs`);
         
@@ -176,7 +176,7 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
         console.log(`📊 Getting data for session: ${sessionId}`);
         
         const session = await db.collection('sessions').findOne({ 
-            _id: sessionId  // Use string ID directly
+            _id: sessionId
         });
         
         if (!session) {
@@ -215,104 +215,73 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
     }
 });
 
-// Save transfer configuration
-app.post('/api/session/:sessionId/transfer', async (req, res) => {
+// Update session data after client-side transfer
+app.post('/api/session/:sessionId/updateData', async (req, res) => {
     try {
         const { sessionId } = req.params;
-        const { dfuCode, transferConfig, userName } = req.body;
+        const { rawData, transfer } = req.body;
         
-        await db.collection('transfers').updateOne(
-            { sessionId, dfuCode },
+        console.log(`📝 Updating session data after transfer for DFU: ${transfer.dfuCode}`);
+        
+        // Update the session with the modified data
+        await db.collection('sessions').updateOne(
+            { _id: sessionId },
             { 
                 $set: { 
-                    ...transferConfig,
-                    sessionId,
-                    dfuCode,
-                    updatedBy: userName,
-                    updatedAt: new Date()
+                    rawData: rawData,
+                    lastModified: new Date(),
+                    lastModifiedBy: transfer.completedBy
                 }
-            },
-            { upsert: true }
+            }
         );
         
-        console.log(`💾 Transfer saved for DFU ${dfuCode} by ${userName}`);
+        // Log the transfer
+        await db.collection('transfers').insertOne({
+            sessionId,
+            dfuCode: transfer.dfuCode,
+            type: transfer.type,
+            targetVariant: transfer.targetVariant,
+            transfers: transfer.transfers,
+            granularTransfers: transfer.granularTransfers,
+            completedBy: transfer.completedBy,
+            completedAt: new Date()
+        });
         
+        console.log(`✅ Data updated successfully`);
         res.json({ success: true });
         
         // Notify other users
-        io.to(sessionId).emit('transferUpdated', { dfuCode, transferConfig, userName });
+        io.to(sessionId).emit('dataUpdated', { 
+            dfuCode: transfer.dfuCode,
+            updatedBy: transfer.completedBy 
+        });
         
     } catch (error) {
-        console.error('Error saving transfer:', error);
-        res.status(500).json({ error: 'Failed to save transfer: ' + error.message });
+        console.error('Error updating data:', error);
+        res.status(500).json({ error: 'Failed to update data' });
     }
 });
 
-// Execute transfers and generate file
-app.post('/api/session/:sessionId/generate', async (req, res) => {
+// Export current data without modifications
+app.post('/api/session/:sessionId/export', async (req, res) => {
     try {
         const { sessionId } = req.params;
+        const { rawData } = req.body;
         
-        console.log(`📦 Generating file for session: ${sessionId}`);
+        console.log(`📦 Exporting data for session: ${sessionId}`);
         
-        // Get session data
-        const session = await db.collection('sessions').findOne({ 
-            _id: sessionId  // String ID
-        });
-        
-        if (!session || !session.rawData) {
-            return res.status(400).json({ error: 'No data available for this session' });
-        }
-        
-        // Get all transfers for this session
-        const transfers = await db.collection('transfers').find({ sessionId }).toArray();
-        console.log(`🔄 Found ${transfers.length} transfers to apply`);
-        
-        // Start with the original raw data
-        let processedData = [...session.rawData];
-        
-        // Apply each transfer sequentially
-        transfers.forEach((transfer, index) => {
-            console.log(`Applying transfer ${index + 1}/${transfers.length}: DFU ${transfer.dfuCode}`);
-            processedData = applyTransfer(processedData, transfer);
-        });
-        
-        // Log summary of changes
-        const originalDFUs = {};
-        const processedDFUs = {};
-        
-        session.rawData.forEach(record => {
-            const dfu = record['DFU'];
-            const part = record['Product Number'];
-            if (!originalDFUs[dfu]) originalDFUs[dfu] = new Set();
-            originalDFUs[dfu].add(part);
-        });
-        
-        processedData.forEach(record => {
-            const dfu = record['DFU'];
-            const part = record['Product Number'];
-            if (!processedDFUs[dfu]) processedDFUs[dfu] = new Set();
-            processedDFUs[dfu].add(part);
-        });
-        
-        console.log('Transfer Summary:');
-        Object.keys(originalDFUs).forEach(dfu => {
-            const originalCount = originalDFUs[dfu].size;
-            const processedCount = processedDFUs[dfu] ? processedDFUs[dfu].size : 0;
-            if (originalCount !== processedCount) {
-                console.log(`  DFU ${dfu}: ${originalCount} variants -> ${processedCount} variants`);
-            }
-        });
+        // Use the provided rawData (already has transfers applied)
+        const dataToExport = rawData || [];
         
         // Create Excel file
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(processedData);
+        const ws = XLSX.utils.json_to_sheet(dataToExport);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
         
         // Generate buffer
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
         
-        console.log(`📦 Generated file with ${transfers.length} transfers applied`);
+        console.log(`📦 Generated file with ${dataToExport.length} records`);
         
         // Send file
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -320,11 +289,12 @@ app.post('/api/session/:sessionId/generate', async (req, res) => {
         res.send(buffer);
         
     } catch (error) {
-        console.error('Error generating file:', error);
-        res.status(500).json({ error: 'Failed to generate file: ' + error.message });
+        console.error('Error exporting file:', error);
+        res.status(500).json({ error: 'Failed to export file' });
     }
 });
-// Add this new endpoint to clear session data
+
+// Clear session data (optional endpoint)
 app.post('/api/session/:sessionId/clear', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -449,42 +419,6 @@ function processMultiVariantDFUs(data) {
     });
     
     return multiVariants;
-}
-
-function applyTransfer(data, transfer) {
-    console.log(`Applying transfer for DFU ${transfer.dfuCode}, type: ${transfer.type}`);
-    
-    return data.map(record => {
-        const recordDFU = record['DFU'];
-        const recordPartNumber = record['Product Number'] || record['Part Number'] || record['Part Code'];
-        
-        if (recordDFU === transfer.dfuCode) {
-            if (transfer.type === 'bulk' && recordPartNumber !== transfer.targetVariant) {
-                // For bulk transfer, change all non-target variants to target
-                const originalPart = recordPartNumber;
-                const originalDemand = record['weekly fcst'] || 0;
-                
-                record['Product Number'] = transfer.targetVariant;
-                record['Transfer History'] = `Bulk transferred from ${originalPart} to ${transfer.targetVariant} (${originalDemand} units) by ${transfer.updatedBy}`;
-                
-                console.log(`Bulk transfer: ${originalPart} -> ${transfer.targetVariant}`);
-                
-            } else if (transfer.type === 'individual' && transfer.transfers) {
-                // For individual transfers, check if this variant has a transfer mapping
-                const targetVariant = transfer.transfers[recordPartNumber];
-                if (targetVariant && targetVariant !== recordPartNumber) {
-                    const originalPart = recordPartNumber;
-                    const originalDemand = record['weekly fcst'] || 0;
-                    
-                    record['Product Number'] = targetVariant;
-                    record['Transfer History'] = `Transferred from ${originalPart} to ${targetVariant} (${originalDemand} units) by ${transfer.updatedBy}`;
-                    
-                    console.log(`Individual transfer: ${originalPart} -> ${targetVariant}`);
-                }
-            }
-        }
-        return record;
-    });
 }
 
 // ============= START SERVER =============
