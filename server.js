@@ -98,7 +98,7 @@ app.post('/api/session/join', async (req, res) => {
                 status: 'active'
             };
             await db.collection('sessions').insertOne(session);
-            console.log(`📁 New session created: ${sessionName} with ID: ${sessionId}`);
+            console.log(`📋 New session created: ${sessionName} with ID: ${sessionId}`);
         }
         
         // Add user to session if not already present
@@ -181,7 +181,7 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
     }
 });
 
-// Get session data
+// Get session data - UPDATED WITH completedTransfers
 app.get('/api/session/:sessionId/data', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -220,7 +220,7 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
             multiVariantDFUs,
             transfers,
             rawData: session.rawData || [],
-            completedTransfers: session.completedTransfers || {}
+            completedTransfers: session.completedTransfers || {} // Include completed transfers status
         });
         
     } catch (error) {
@@ -229,7 +229,7 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
     }
 });
 
-// Save transfer configuration
+// Save transfer configuration (this might already exist, you can keep it)
 app.post('/api/session/:sessionId/transfer', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -262,7 +262,7 @@ app.post('/api/session/:sessionId/transfer', async (req, res) => {
     }
 });
 
-// Update session data after client-side transfer
+// Update session data after client-side transfer - PROPERLY PLACED
 app.post('/api/session/:sessionId/updateData', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -276,7 +276,7 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
             { 
                 $set: { 
                     rawData: rawData,
-                    completedTransfers: completedTransfers,
+                    completedTransfers: completedTransfers, // Store completed transfers status
                     lastModified: new Date(),
                     lastModifiedBy: transfer.completedBy
                 }
@@ -306,11 +306,11 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
         
     } catch (error) {
         console.error('Error updating data:', error);
-        res.status(500).json({ error: 'Failed to update data: ' + error.message });
+        res.status(500).json({ error: 'Failed to update data' });
     }
 });
 
-// Export current data
+// Export current data without modifications - PROPERLY PLACED
 app.post('/api/session/:sessionId/export', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -338,11 +338,11 @@ app.post('/api/session/:sessionId/export', async (req, res) => {
         
     } catch (error) {
         console.error('Error exporting file:', error);
-        res.status(500).json({ error: 'Failed to export file: ' + error.message });
+        res.status(500).json({ error: 'Failed to export file' });
     }
 });
 
-// Clear session data
+// Clear session data (optional endpoint - keep if you have it)
 app.post('/api/session/:sessionId/clear', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -370,11 +370,11 @@ app.post('/api/session/:sessionId/clear', async (req, res) => {
         
     } catch (error) {
         console.error('Error clearing session:', error);
-        res.status(500).json({ error: 'Failed to clear session: ' + error.message });
+        res.status(500).json({ error: 'Failed to clear session' });
     }
 });
 
-// End session and clear all data
+// End session and clear all data - NEW ENDPOINT
 app.post('/api/session/:sessionId/end', async (req, res) => {
     try {
         const { sessionId } = req.params;
