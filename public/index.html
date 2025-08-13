@@ -26,10 +26,13 @@
         </div>
     </div>
     
-    <!-- Active Users Panel -->
+    <!-- Active Users Panel with End Session Button -->
     <div id="activeUsersPanel" class="fixed right-4 top-4 bg-white rounded-lg shadow-lg p-4 w-64 hidden z-40">
         <h3 class="font-semibold mb-2">Active Users</h3>
-        <div id="activeUsersList"></div>
+        <div id="activeUsersList" class="mb-4"></div>
+        <button onclick="endSession()" class="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 text-sm">
+            End Session & Clear Data
+        </button>
     </div>
     
     <!-- Main App Container -->
@@ -102,6 +105,32 @@
             }
         }
         
+        async function endSession() {
+            if (!confirm('Are you sure you want to end this session? This will clear all data and disconnect all users.')) {
+                return;
+            }
+            
+            try {
+                // Call the clear endpoint
+                const response = await fetch(`/api/session/${sessionId}/end`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userName })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    alert('Session ended successfully. All data has been cleared.');
+                    // Reload the page to start fresh
+                    window.location.reload();
+                }
+            } catch (error) {
+                console.error('Error ending session:', error);
+                alert('Failed to end session: ' + error.message);
+            }
+        }
+        
         function setupMultiUserFeatures() {
             if (!appInstance) return;
             
@@ -146,6 +175,11 @@
                 }
             });
             
+            socket.on('sessionEnded', ({ endedBy }) => {
+                alert(`Session ended by ${endedBy}. All data has been cleared.`);
+                window.location.reload();
+            });
+            
             // Override loadData method - upload file and let client process it
             const originalLoadData = appInstance.loadData.bind(appInstance);
             appInstance.loadData = async function(file) {
@@ -186,12 +220,15 @@
             appInstance.executeTransfer = function(dfuCode) {
                 console.log('Executing transfer with original logic');
                 
-                // Execute with original logic (this modifies this.rawData)
+                // Execute with original logic (this modifies this.rawData and sets completedTransfers)
                 originalExecuteTransfer(dfuCode);
                 
                 // After execution, save the modified rawData to server
                 setTimeout(() => {
                     console.log('Saving modified data to server after transfer');
+                    
+                    // Get the completed transfers to sync status
+                    const completedTransfers = this.completedTransfers || {};
                     
                     // Save the entire modified dataset back to server
                     fetch(`/api/session/${sessionId}/updateData`, {
@@ -199,6 +236,7 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             rawData: this.rawData,
+                            completedTransfers: completedTransfers,
                             transfer: {
                                 dfuCode,
                                 type: this.bulkTransfers[dfuCode] ? 'bulk' : 
@@ -283,6 +321,12 @@
                 if (data.rawData && data.rawData.length > 0) {
                     appInstance.rawData = data.rawData;
                     appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
+                    
+                    // Restore completed transfers status
+                    if (data.completedTransfers) {
+                        appInstance.completedTransfers = data.completedTransfers;
+                    }
+                    
                     appInstance.processMultiVariantDFUs(data.rawData);
                     appInstance.isProcessed = true;
                     appInstance.render();
