@@ -94,6 +94,8 @@ app.post('/api/session/join', async (req, res) => {
                 users: [],
                 dataUploaded: false,
                 rawData: null,
+                variantCycleData: null, // Add support for cycle data
+                hasVariantCycleData: false,
                 completedTransfers: {},
                 status: 'active'
             };
@@ -194,7 +196,90 @@ app.post('/api/upload/:sessionId', upload.single('file'), async (req, res) => {
     }
 });
 
-// Get session data - IMPROVED ERROR HANDLING
+// NEW: Upload Variant Cycle Dates file
+app.post('/api/upload-cycle/:sessionId', upload.single('file'), async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const file = req.file;
+        
+        if (!file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        console.log(`📅 Processing variant cycle dates file for session: ${sessionId}`);
+        
+        // Check if session exists
+        const sessionExists = await db.collection('sessions').findOne({ _id: sessionId });
+        if (!sessionExists) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+        
+        // Parse Excel file
+        const workbook = XLSX.read(file.buffer, { type: 'buffer' });
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const cycleData = XLSX.utils.sheet_to_json(worksheet);
+        
+        console.log(`📊 Parsed ${cycleData.length} cycle date records`);
+        
+        // Process the cycle data into a more usable format
+        const processedCycleData = {};
+        cycleData.forEach(record => {
+            // Find the DFU and Part Code columns (case-insensitive)
+            const dfuCode = record['DFU'] || record['dfu'] || record['Dfu'];
+            const partCode = record['Part Code'] || record['PART CODE'] || record['Part_Code'] || 
+                           record['Product Number'] || record['Part Number'];
+            const sos = record['SOS'] || record['sos'] || record['Sos'];
+            const eos = record['EOS'] || record['eos'] || record['Eos'];
+            const comments = record['Comments'] || record['COMMENTS'] || record['Comment'] || '';
+            
+            if (dfuCode && partCode) {
+                if (!processedCycleData[dfuCode]) {
+                    processedCycleData[dfuCode] = {};
+                }
+                processedCycleData[dfuCode][partCode] = {
+                    sos: sos || 'N/A',
+                    eos: eos || 'N/A',
+                    comments: comments
+                };
+            }
+        });
+        
+        console.log(`📅 Processed cycle data for ${Object.keys(processedCycleData).length} DFUs`);
+        
+        // Store cycle data in session
+        const updateResult = await db.collection('sessions').updateOne(
+            { _id: sessionId },
+            { 
+                $set: { 
+                    variantCycleData: processedCycleData,
+                    hasVariantCycleData: true,
+                    cycleDataUploadedAt: new Date()
+                }
+            }
+        );
+        
+        console.log(`📝 Cycle data update result: ${updateResult.modifiedCount} document(s) modified`);
+        
+        res.json({ 
+            success: true, 
+            recordCount: cycleData.length,
+            dfuCount: Object.keys(processedCycleData).length
+        });
+        
+        // Notify all connected clients that cycle data was uploaded
+        io.to(sessionId).emit('cycleDataUploaded', { 
+            dfuCount: Object.keys(processedCycleData).length,
+            uploadedBy: req.body.userName || 'Unknown User'
+        });
+        
+    } catch (error) {
+        console.error('Error uploading cycle data file:', error);
+        res.status(500).json({ error: 'Failed to process cycle data file: ' + error.message });
+    }
+});
+
+// Get session data - IMPROVED ERROR HANDLING WITH CYCLE DATA
 app.get('/api/session/:sessionId/data', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -218,18 +303,22 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
                 session: {
                     name: 'Session Not Found',
                     dataUploaded: false,
-                    userCount: 0
+                    userCount: 0,
+                    hasVariantCycleData: false
                 },
                 multiVariantDFUs: {},
                 transfers: [],
                 rawData: [],
-                completedTransfers: {}
+                completedTransfers: {},
+                variantCycleData: {},
+                hasVariantCycleData: false
             });
         }
         
         console.log(`✅ Found session: ${session.name}`);
         console.log(`📋 Data uploaded: ${session.dataUploaded || false}`);
         console.log(`📊 Raw data records: ${session.rawData ? session.rawData.length : 0}`);
+        console.log(`📅 Has cycle data: ${session.hasVariantCycleData || false}`);
         
         // Process multi-variant DFUs if data exists
         let multiVariantDFUs = {};
@@ -249,12 +338,15 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
             session: {
                 name: session.name,
                 dataUploaded: session.dataUploaded || false,
-                userCount: session.users ? session.users.length : 0
+                userCount: session.users ? session.users.length : 0,
+                hasVariantCycleData: session.hasVariantCycleData || false
             },
             multiVariantDFUs: multiVariantDFUs || {},
             transfers: transfers || [],
             rawData: session.rawData || [],
-            completedTransfers: session.completedTransfers || {}
+            completedTransfers: session.completedTransfers || {},
+            variantCycleData: session.variantCycleData || {},
+            hasVariantCycleData: session.hasVariantCycleData || false
         });
         
     } catch (error) {
@@ -264,12 +356,15 @@ app.get('/api/session/:sessionId/data', async (req, res) => {
             session: {
                 name: 'Error Loading Session',
                 dataUploaded: false,
-                userCount: 0
+                userCount: 0,
+                hasVariantCycleData: false
             },
             multiVariantDFUs: {},
             transfers: [],
             rawData: [],
-            completedTransfers: {}
+            completedTransfers: {},
+            variantCycleData: {},
+            hasVariantCycleData: false
         });
     }
 });
@@ -387,7 +482,7 @@ app.post('/api/session/:sessionId/export', async (req, res) => {
     }
 });
 
-// Clear session data
+// Clear session data - UPDATED TO CLEAR CYCLE DATA TOO
 app.post('/api/session/:sessionId/clear', async (req, res) => {
     try {
         const { sessionId } = req.params;
@@ -395,19 +490,21 @@ app.post('/api/session/:sessionId/clear', async (req, res) => {
         // Clear all transfers for this session
         await db.collection('transfers').deleteMany({ sessionId });
         
-        // Clear raw data from session
+        // Clear raw data and cycle data from session
         await db.collection('sessions').updateOne(
             { _id: sessionId },
             { 
                 $set: { 
                     rawData: null,
                     dataUploaded: false,
+                    variantCycleData: null,
+                    hasVariantCycleData: false,
                     completedTransfers: {}
                 }
             }
         );
         
-        console.log(`🗑️ Cleared data for session: ${sessionId}`);
+        console.log(`🗑️ Cleared all data for session: ${sessionId}`);
         res.json({ success: true });
         
         // Notify all connected users

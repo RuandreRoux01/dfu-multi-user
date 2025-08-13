@@ -303,6 +303,15 @@
                 }
             });
             
+            socket.on('cycleDataUploaded', ({ dfuCount, uploadedBy }) => {
+                console.log('Cycle data uploaded by:', uploadedBy);
+                if (uploadedBy !== userName) {
+                    showNotification(`${uploadedBy} uploaded variant cycle dates for ${dfuCount} DFUs`, 'info');
+                }
+                // Reload data to get the cycle data
+                loadSessionData();
+            });
+            
             socket.on('sessionEnded', ({ endedBy }) => {
                 alert(`Session ended by ${endedBy}. All data has been cleared.`);
                 window.location.reload();
@@ -388,6 +397,36 @@
                 }, 500);
             };
             
+            // Override loadVariantCycleData for multi-user sync
+            const originalLoadVariantCycleData = appInstance.loadVariantCycleData.bind(appInstance);
+            appInstance.loadVariantCycleData = async function(file) {
+                console.log('Multi-user loadVariantCycleData');
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('userName', userName);
+                
+                try {
+                    const response = await fetch(`/api/upload-cycle/${sessionId}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification(`Successfully uploaded ${result.recordCount} variant cycle records for ${result.dfuCount} DFUs`, 'success');
+                        // The cycle data will be loaded when we reload session data
+                        await loadSessionData();
+                    } else {
+                        showNotification('Failed to upload cycle data: ' + result.error, 'error');
+                    }
+                } catch (error) {
+                    console.error('Error uploading cycle data:', error);
+                    showNotification('Upload failed: ' + error.message, 'error');
+                }
+            };
+            
             // Override exportData method - just download the current rawData
             appInstance.exportData = async function() {
                 console.log('Multi-user exportData');
@@ -458,8 +497,21 @@
                         appInstance.completedTransfers = data.completedTransfers;
                     }
                     
+                    // Load variant cycle data if it exists
+                    if (data.variantCycleData && Object.keys(data.variantCycleData).length > 0) {
+                        appInstance.variantCycleDates = data.variantCycleData;
+                        appInstance.hasVariantCycleData = true;
+                        console.log('Loaded variant cycle data for', Object.keys(data.variantCycleData).length, 'DFUs');
+                    }
+                    
                     appInstance.processMultiVariantDFUs(data.rawData);
                     appInstance.isProcessed = true;
+                    appInstance.render();
+                } else if (data.variantCycleData && Object.keys(data.variantCycleData).length > 0) {
+                    // Even if no main data, load cycle data if it exists
+                    appInstance.variantCycleDates = data.variantCycleData;
+                    appInstance.hasVariantCycleData = true;
+                    console.log('Loaded variant cycle data (no main data yet)');
                     appInstance.render();
                 }
             } catch (error) {
