@@ -76,15 +76,25 @@ async function getCompletedTransfers() {
 
 // Save individual transfer to DB
 async function saveTransfer(dfuCode, transferData, userName) {
+    const transferDoc = {
+        sessionId: TEAM_SESSION_ID,
+        dfuCode,
+        type: transferData.type || 'individual',
+        completedBy: userName,
+        completedAt: new Date()
+    };
+    
+    // Add any transfer-specific data
+    if (transferData.bulkTransfer) {
+        transferDoc.bulkTransfer = transferData.bulkTransfer;
+    }
+    if (transferData.granularTransfers) {
+        transferDoc.granularTransfers = transferData.granularTransfers;
+    }
+    
     await db.collection('transfers').replaceOne(
         { sessionId: TEAM_SESSION_ID, dfuCode },
-        {
-            sessionId: TEAM_SESSION_ID,
-            dfuCode,
-            ...transferData,
-            completedBy: userName,
-            completedAt: new Date()
-        },
+        transferDoc,
         { upsert: true }
     );
 }
@@ -224,7 +234,9 @@ app.get('/api/session/data', async (req, res) => {
 
 app.post('/api/updateData', async (req, res) => {
     try {
-        const { rawData, transfer } = req.body;
+        const { rawData, completedTransfers, transfer } = req.body;
+        
+        console.log(`[UPDATE] Processing transfer for DFU ${transfer?.dfuCode}`);
         
         // Update raw data
         await db.collection('sessions').updateOne(
@@ -232,18 +244,21 @@ app.post('/api/updateData', async (req, res) => {
             { $set: { rawData, lastModified: new Date() }}
         );
         
-        // Save transfer to transfers collection
-        if (transfer?.dfuCode) {
-            await saveTransfer(transfer.dfuCode, transfer, transfer.completedBy);
+        // Save each completed transfer to DB
+        if (completedTransfers && Object.keys(completedTransfers).length > 0) {
+            for (const [dfuCode, transferData] of Object.entries(completedTransfers)) {
+                await saveTransfer(dfuCode, transferData, transfer?.completedBy || 'Unknown');
+            }
         }
         
         res.json({ success: true });
         io.emit('dataUpdated', { 
-            dfuCode: transfer.dfuCode,
-            updatedBy: transfer.completedBy 
+            dfuCode: transfer?.dfuCode,
+            updatedBy: transfer?.completedBy 
         });
         
     } catch (error) {
+        console.error('[UPDATE] Error:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -252,13 +267,28 @@ app.post('/api/undoTransfer', async (req, res) => {
     try {
         const { dfuCode, userName } = req.body;
         
+        console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
+        
+        // Get the original raw data before any transfers
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        
         // Delete from transfers collection
         await deleteTransfer(dfuCode);
         
-        res.json({ success: true });
-        io.emit('transferUndone', { dfuCode, undoneBy: userName });
+        // Get all remaining transfers
+        const remainingTransfers = await getCompletedTransfers();
+        
+        res.json({ success: true, remainingTransfers });
+        
+        // Notify all users with updated transfer list
+        io.emit('transferUndone', { 
+            dfuCode, 
+            undoneBy: userName,
+            remainingTransfers 
+        });
         
     } catch (error) {
+        console.error('[UNDO] Error:', error);
         res.status(500).json({ error: error.message });
     }
 });
