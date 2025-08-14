@@ -5,175 +5,135 @@ const cors = require('cors');
 const multer = require('multer');
 const { MongoClient } = require('mongodb');
 const XLSX = require('xlsx');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-// Debug middleware
-app.use('/api', (req, res, next) => {
-    console.log(`[API] ${req.method} ${req.path}`);
-    next();
-});
+let db, isDbConnected = false;
+const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
+const activeUsers = new Set();
 
 // MongoDB connection
-let db;
-const mongoUri = process.env.MONGODB_URI;
-let isDbConnected = false;
-
-// SINGLE SESSION ID - Always use the same one
-const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
-
-MongoClient.connect(mongoUri)
+MongoClient.connect(process.env.MONGODB_URI)
     .then(client => {
-        console.log('[DB] Connected to MongoDB Atlas!');
+        console.log('[DB] Connected!');
         db = client.db('dfu_transfer_db');
         isDbConnected = true;
-        initializeCollections();
+        initializeDatabase();
     })
-    .catch(error => {
-        console.error('[DB] MongoDB connection error:', error);
-    });
+    .catch(err => console.error('[DB] Error:', err));
 
-// Initialize database and ensure team session exists
-async function initializeCollections() {
+async function initializeDatabase() {
     try {
-        await db.createCollection('sessions');
-        await db.createCollection('transfers');
+        // Ensure collections exist
+        await db.createCollection('sessions').catch(() => {});
+        await db.createCollection('transfers').catch(() => {});
         
-        // Ensure the team session exists
-        const existingSession = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        if (!existingSession) {
+        // Initialize or restore session
+        let session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        
+        if (!session) {
             await db.collection('sessions').insertOne({
                 _id: TEAM_SESSION_ID,
-                name: 'Team DFU Transfer Session',
+                name: 'Team Session',
                 createdAt: new Date(),
-                users: [],
                 dataUploaded: false,
                 rawData: null,
                 variantCycleData: null,
-                hasVariantCycleData: false,
-                completedTransfers: {},
-                status: 'active'
+                hasVariantCycleData: false
             });
-            console.log('[DB] Team session created');
-        } else {
-            console.log('[DB] Team session already exists');
         }
         
-        console.log('[DB] Database ready!');
+        console.log('[DB] Ready!');
     } catch (error) {
-        console.log('[DB] Error initializing:', error);
+        console.error('[DB] Init error:', error);
     }
 }
 
-// File upload setup
 const storage = multer.memoryStorage();
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 }
-});
+const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
-// Store active users in memory
-const activeUsers = new Set();
+// Helper to get completed transfers from DB
+async function getCompletedTransfers() {
+    const transfers = await db.collection('transfers').find({ 
+        sessionId: TEAM_SESSION_ID 
+    }).toArray();
+    
+    const completed = {};
+    transfers.forEach(t => {
+        completed[t.dfuCode] = t;
+    });
+    return completed;
+}
 
-// Database check middleware
-const checkDbConnection = (req, res, next) => {
-    if (!isDbConnected || !db) {
-        return res.status(503).json({ 
-            error: 'Database connection not ready. Please try again.' 
-        });
-    }
-    next();
-};
+// Save individual transfer to DB
+async function saveTransfer(dfuCode, transferData, userName) {
+    await db.collection('transfers').replaceOne(
+        { sessionId: TEAM_SESSION_ID, dfuCode },
+        {
+            sessionId: TEAM_SESSION_ID,
+            dfuCode,
+            ...transferData,
+            completedBy: userName,
+            completedAt: new Date()
+        },
+        { upsert: true }
+    );
+}
 
-// ============= REST API ENDPOINTS =============
+// Delete transfer from DB
+async function deleteTransfer(dfuCode) {
+    await db.collection('transfers').deleteOne({
+        sessionId: TEAM_SESSION_ID,
+        dfuCode
+    });
+}
 
-// Health check
+// API Routes
 app.get('/api/health', (req, res) => {
     res.json({ 
-        status: 'Server is running!', 
-        database: isDbConnected ? 'Connected' : 'Not connected',
-        sessionId: TEAM_SESSION_ID
+        status: 'OK', 
+        db: isDbConnected,
+        session: TEAM_SESSION_ID 
     });
 });
 
-// Join the team session (simplified - just add user)
-app.post('/api/session/join', checkDbConnection, async (req, res) => {
+app.post('/api/session/join', async (req, res) => {
     try {
         const { userName } = req.body;
+        if (!userName) return res.status(400).json({ error: 'Name required' });
         
-        if (!userName) {
-            return res.status(400).json({ error: 'User name is required' });
-        }
-        
-        console.log(`[SESSION] ${userName} joining team session`);
-        
-        // Add user to active users list
         const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        // Update session with user info (optional - for persistence)
-        await db.collection('sessions').updateOne(
-            { _id: TEAM_SESSION_ID },
-            { 
-                $addToSet: { 
-                    users: { 
-                        id: userId, 
-                        name: userName, 
-                        joinedAt: new Date() 
-                    }
-                }
-            }
-        );
-        
-        console.log(`[SESSION] ${userName} joined successfully`);
         
         res.json({ 
             success: true,
-            sessionId: TEAM_SESSION_ID,  // Always the same
-            sessionName: 'Team Session',
-            userId: userId,
-            userName: userName
+            sessionId: TEAM_SESSION_ID,
+            userId,
+            userName
         });
     } catch (error) {
-        console.error('[SESSION] Error joining:', error);
-        res.status(500).json({ error: 'Failed to join session' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Upload Excel file (simplified)
-app.post('/api/upload', checkDbConnection, upload.single('file'), async (req, res) => {
+app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
-        const file = req.file;
-        const userName = req.body.userName || 'Unknown User';
+        if (!req.file) return res.status(400).json({ error: 'No file' });
         
-        if (!file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         
-        console.log(`[UPLOAD] Processing file from ${userName}`);
+        // Clear old transfers when new data uploaded
+        await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
         
-        // Parse Excel file
-        const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const data = XLSX.utils.sheet_to_json(worksheet);
-        
-        console.log(`[UPLOAD] Parsed ${data.length} rows`);
-        
-        // Store in the team session
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
@@ -181,222 +141,157 @@ app.post('/api/upload', checkDbConnection, upload.single('file'), async (req, re
                     rawData: data,
                     dataUploaded: true,
                     uploadedAt: new Date(),
-                    uploadedBy: userName,
-                    completedTransfers: {}
+                    uploadedBy: req.body.userName
                 }
             }
         );
         
-        // Process multi-variant DFUs
-        const multiVariantDFUs = processMultiVariantDFUs(data);
-        
-        res.json({ 
-            success: true, 
-            rowCount: data.length,
-            dfuCount: Object.keys(multiVariantDFUs).length 
-        });
-        
-        // Notify all connected users
-        io.emit('dataUploaded', { 
-            dfuCount: Object.keys(multiVariantDFUs).length,
-            uploadedBy: userName
-        });
+        res.json({ success: true, rowCount: data.length });
+        io.emit('dataUploaded', { uploadedBy: req.body.userName });
         
     } catch (error) {
-        console.error('[UPLOAD] Error:', error);
-        res.status(500).json({ error: 'Failed to process file' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Upload variant cycle dates
-app.post('/api/upload-cycle', checkDbConnection, upload.single('file'), async (req, res) => {
+app.post('/api/upload-cycle', upload.single('file'), async (req, res) => {
     try {
-        const file = req.file;
-        const userName = req.body.userName || 'Unknown User';
+        if (!req.file) return res.status(400).json({ error: 'No file' });
         
-        if (!file) {
-            return res.status(400).json({ error: 'No file uploaded' });
-        }
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const cycleData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         
-        console.log(`[CYCLE] Processing cycle file from ${userName}`);
-        
-        // Parse Excel file
-        const workbook = XLSX.read(file.buffer, { type: 'buffer' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const cycleData = XLSX.utils.sheet_to_json(worksheet);
-        
-        // Process cycle data
-        const processedCycleData = {};
-        cycleData.forEach(record => {
-            const dfuCode = record['DFU'] || record['dfu'];
-            const partCode = record['Part Code'] || record['Product Number'];
-            const sos = record['SOS'] || record['sos'];
-            const eos = record['EOS'] || record['eos'];
-            const comments = record['Comments'] || '';
-            
-            if (dfuCode && partCode) {
-                if (!processedCycleData[dfuCode]) {
-                    processedCycleData[dfuCode] = {};
-                }
-                processedCycleData[dfuCode][partCode] = {
-                    sos: sos || 'N/A',
-                    eos: eos || 'N/A',
-                    comments: comments
+        const processed = {};
+        cycleData.forEach(rec => {
+            const dfu = rec['DFU'] || rec['dfu'];
+            const part = rec['Part Code'] || rec['Product Number'];
+            if (dfu && part) {
+                if (!processed[dfu]) processed[dfu] = {};
+                processed[dfu][part] = {
+                    sos: rec['SOS'] || 'N/A',
+                    eos: rec['EOS'] || 'N/A',
+                    comments: rec['Comments'] || ''
                 };
             }
         });
         
-        // Update session
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
-                    variantCycleData: processedCycleData,
+                    variantCycleData: processed,
                     hasVariantCycleData: true,
-                    cycleDataUploadedAt: new Date(),
-                    cycleDataUploadedBy: userName
+                    cycleUploadedAt: new Date()
                 }
             }
         );
         
-        res.json({ 
-            success: true, 
-            recordCount: cycleData.length,
-            dfuCount: Object.keys(processedCycleData).length
-        });
-        
-        // Notify all users
-        io.emit('cycleDataUploaded', { 
-            dfuCount: Object.keys(processedCycleData).length,
-            uploadedBy: userName
-        });
+        res.json({ success: true, dfuCount: Object.keys(processed).length });
+        io.emit('cycleDataUploaded', { uploadedBy: req.body.userName });
         
     } catch (error) {
-        console.error('[CYCLE] Error:', error);
-        res.status(500).json({ error: 'Failed to process cycle data' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Get session data (simplified)
-app.get('/api/session/data', checkDbConnection, async (req, res) => {
+app.get('/api/session/data', async (req, res) => {
     try {
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        const completedTransfers = await getCompletedTransfers();
         
-        if (!session) {
-            // Should never happen, but handle it
-            return res.json({
-                session: { name: 'Team Session', dataUploaded: false },
-                multiVariantDFUs: {},
-                rawData: [],
-                completedTransfers: {},
-                variantCycleData: {},
-                hasVariantCycleData: false
-            });
-        }
-        
-        // Process multi-variant DFUs
         let multiVariantDFUs = {};
-        if (session.rawData && session.rawData.length > 0) {
+        if (session?.rawData?.length > 0) {
             multiVariantDFUs = processMultiVariantDFUs(session.rawData);
         }
         
         res.json({
             session: {
-                name: session.name,
-                dataUploaded: session.dataUploaded || false,
-                userCount: activeUsers.size,
-                hasVariantCycleData: session.hasVariantCycleData || false
+                name: 'Team Session',
+                dataUploaded: session?.dataUploaded || false,
+                hasVariantCycleData: session?.hasVariantCycleData || false
             },
-            multiVariantDFUs: multiVariantDFUs,
-            rawData: session.rawData || [],
-            completedTransfers: session.completedTransfers || {},
-            variantCycleData: session.variantCycleData || {},
-            hasVariantCycleData: session.hasVariantCycleData || false
+            multiVariantDFUs,
+            rawData: session?.rawData || [],
+            completedTransfers,
+            variantCycleData: session?.variantCycleData || {},
+            hasVariantCycleData: session?.hasVariantCycleData || false
         });
         
     } catch (error) {
-        console.error('[DATA] Error:', error);
-        res.status(500).json({ error: 'Failed to get data' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Update data after transfer
-app.post('/api/updateData', checkDbConnection, async (req, res) => {
+app.post('/api/updateData', async (req, res) => {
     try {
-        const { rawData, completedTransfers, transfer } = req.body;
+        const { rawData, transfer } = req.body;
         
-        console.log(`[UPDATE] Transfer by ${transfer.completedBy} for DFU ${transfer.dfuCode}`);
-        
+        // Update raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
-            { 
-                $set: { 
-                    rawData: rawData,
-                    completedTransfers: completedTransfers,
-                    lastModified: new Date(),
-                    lastModifiedBy: transfer.completedBy
-                }
-            }
+            { $set: { rawData, lastModified: new Date() }}
         );
         
-        res.json({ success: true });
+        // Save transfer to transfers collection
+        if (transfer?.dfuCode) {
+            await saveTransfer(transfer.dfuCode, transfer, transfer.completedBy);
+        }
         
-        // Notify all users
+        res.json({ success: true });
         io.emit('dataUpdated', { 
             dfuCode: transfer.dfuCode,
             updatedBy: transfer.completedBy 
         });
         
     } catch (error) {
-        console.error('[UPDATE] Error:', error);
-        res.status(500).json({ error: 'Failed to update data' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Undo transfer
-app.post('/api/undoTransfer', checkDbConnection, async (req, res) => {
+app.post('/api/undoTransfer', async (req, res) => {
     try {
         const { dfuCode, userName } = req.body;
         
-        console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
+        // Delete from transfers collection
+        await deleteTransfer(dfuCode);
         
-        // Get current session
-        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        const completedTransfers = session.completedTransfers || {};
-        delete completedTransfers[dfuCode];
+        res.json({ success: true });
+        io.emit('transferUndone', { dfuCode, undoneBy: userName });
         
-        // Update session
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/clear', async (req, res) => {
+    try {
+        // Clear session data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
-                    completedTransfers: completedTransfers,
-                    lastModified: new Date(),
-                    lastModifiedBy: userName
+                    rawData: null,
+                    dataUploaded: false,
+                    variantCycleData: null,
+                    hasVariantCycleData: false
                 }
             }
         );
         
-        res.json({ success: true });
+        // Clear all transfers
+        await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
         
-        // Notify all users
-        io.emit('transferUndone', { 
-            dfuCode,
-            undoneBy: userName
-        });
+        res.json({ success: true });
+        io.emit('dataCleared', { clearedBy: req.body.userName });
         
     } catch (error) {
-        console.error('[UNDO] Error:', error);
-        res.status(500).json({ error: 'Failed to undo transfer' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Export data
-app.post('/api/export', checkDbConnection, async (req, res) => {
+app.post('/api/export', async (req, res) => {
     try {
         const { rawData } = req.body;
-        
         const wb = XLSX.utils.book_new();
         const ws = XLSX.utils.json_to_sheet(rawData || []);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
@@ -408,56 +303,17 @@ app.post('/api/export', checkDbConnection, async (req, res) => {
         res.send(buffer);
         
     } catch (error) {
-        console.error('[EXPORT] Error:', error);
-        res.status(500).json({ error: 'Failed to export' });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// Clear all data (reset the session)
-app.post('/api/clear', checkDbConnection, async (req, res) => {
-    try {
-        const { userName } = req.body;
-        
-        console.log(`[CLEAR] ${userName} clearing all data`);
-        
-        await db.collection('sessions').updateOne(
-            { _id: TEAM_SESSION_ID },
-            { 
-                $set: { 
-                    rawData: null,
-                    dataUploaded: false,
-                    variantCycleData: null,
-                    hasVariantCycleData: false,
-                    completedTransfers: {},
-                    clearedAt: new Date(),
-                    clearedBy: userName
-                }
-            }
-        );
-        
-        res.json({ success: true });
-        
-        // Notify all users
-        io.emit('dataCleared', { clearedBy: userName });
-        
-    } catch (error) {
-        console.error('[CLEAR] Error:', error);
-        res.status(500).json({ error: 'Failed to clear data' });
-    }
-});
-
-// ============= WEBSOCKET HANDLING =============
-
+// WebSocket
 io.on('connection', (socket) => {
-    console.log('[WS] New client connected');
+    console.log('[WS] Client connected');
     
     socket.on('joinSession', ({ userName }) => {
         socket.userName = userName;
         activeUsers.add(userName);
-        
-        console.log(`[WS] ${userName} joined`);
-        
-        // Notify all users
         io.emit('userJoined', { userName });
         io.emit('activeUsers', Array.from(activeUsers));
     });
@@ -465,14 +321,12 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         if (socket.userName) {
             activeUsers.delete(socket.userName);
-            console.log(`[WS] ${socket.userName} disconnected`);
             io.emit('activeUsers', Array.from(activeUsers));
         }
     });
 });
 
-// ============= HELPER FUNCTIONS =============
-
+// Helper function
 function processMultiVariantDFUs(data) {
     const grouped = {};
     
@@ -504,15 +358,13 @@ function processMultiVariantDFUs(data) {
         if (variants.length > 1) {
             const variantDemand = {};
             variants.forEach(variant => {
-                const variantRecords = grouped[dfuCode].records.filter(r => {
-                    const partNumber = r['Product Number'] || r['Part Number'];
-                    return partNumber === variant;
-                });
+                const variantRecords = grouped[dfuCode].records.filter(r => 
+                    (r['Product Number'] || r['Part Number']) === variant
+                );
                 
-                const totalDemand = variantRecords.reduce((sum, r) => {
-                    const demand = parseFloat(r['weekly fcst'] || 0);
-                    return sum + demand;
-                }, 0);
+                const totalDemand = variantRecords.reduce((sum, r) => 
+                    sum + parseFloat(r['weekly fcst'] || 0), 0
+                );
                 
                 variantDemand[variant] = {
                     totalDemand,
@@ -522,9 +374,9 @@ function processMultiVariantDFUs(data) {
             });
             
             multiVariants[dfuCode] = {
-                variants: variants,
+                variants,
                 recordCount: grouped[dfuCode].records.length,
-                variantDemand: variantDemand
+                variantDemand
             };
         }
     });
@@ -532,13 +384,7 @@ function processMultiVariantDFUs(data) {
     return multiVariants;
 }
 
-// ============= START SERVER =============
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`
-    [SERVER] Server is running!
-    [SERVER] Port: ${PORT}
-    [SERVER] Team Session ID: ${TEAM_SESSION_ID}
-    `);
+    console.log(`[SERVER] Running on port ${PORT}`);
 });
