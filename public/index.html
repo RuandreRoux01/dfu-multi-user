@@ -3,13 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DFU Demand Transfer Management - Multi User</title>
+    <title>DFU Transfer Management - Team Tool</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <style>
-        /* Notification container styles */
         #notifications {
             position: fixed;
             top: 20px;
@@ -21,53 +20,28 @@
             max-width: 400px;
         }
         
-        /* Notification animation */
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
-        
-        @keyframes slideOut {
-            from {
-                transform: translateX(0);
-                opacity: 1;
-            }
-            to {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-        }
-        
         .notification-enter {
             animation: slideIn 0.3s ease-out;
         }
         
-        .notification-exit {
-            animation: slideOut 0.3s ease-out;
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
         
-        /* Adjust main content to account for active users panel */
         #mainContent {
-            padding-right: 280px; /* Make room for the active users panel */
+            padding-right: 280px;
         }
         
-        /* Active users panel - now on the right side */
         #activeUsersPanel {
             position: fixed;
             right: 20px;
-            top: 80px;
+            top: 20px;
             width: 250px;
-            max-height: 300px;
+            max-height: 400px;
             overflow-y: auto;
         }
         
-        /* Responsive adjustments */
         @media (max-width: 1024px) {
             #mainContent {
                 padding-right: 20px;
@@ -83,36 +57,34 @@
         }
     </style>
     <script>
-        // Prevent the original app from auto-initializing
         window.preventAutoInit = true;
     </script>
 </head>
 <body class="bg-gray-100">
-    <!-- Session Login Modal -->
-    <div id="sessionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <!-- Simple Login - Just enter your name -->
+    <div id="loginModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div class="bg-white rounded-lg p-6 w-96">
-            <h2 class="text-xl font-bold mb-4">Join or Create Session</h2>
-            <input type="text" id="sessionName" placeholder="Session Name" class="w-full mb-3 p-2 border rounded">
-            <input type="text" id="userName" placeholder="Your Name" class="w-full mb-3 p-2 border rounded">
-            <button id="joinSessionBtn" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700" onclick="handleJoinSession()">
-                Join Session
+            <h2 class="text-xl font-bold mb-4">Join Team Session</h2>
+            <input type="text" id="userName" placeholder="Enter your name" class="w-full mb-3 p-2 border rounded">
+            <button id="joinBtn" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700" onclick="joinTeam()">
+                Join Team
             </button>
         </div>
     </div>
     
-    <!-- Notifications Container -->
+    <!-- Notifications -->
     <div id="notifications"></div>
     
-    <!-- Active Users Panel (moved to right side) -->
+    <!-- Active Users Panel -->
     <div id="activeUsersPanel" class="bg-white rounded-lg shadow-lg p-4 hidden z-40">
-        <h3 class="font-semibold mb-2">Active Users</h3>
+        <h3 class="font-semibold mb-2">Active Team Members</h3>
         <div id="activeUsersList" class="mb-4 text-sm"></div>
-        <button onclick="endSession()" class="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 text-sm">
-            End Session & Clear Data
+        <button onclick="clearAllData()" class="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 text-sm">
+            Clear All Data
         </button>
     </div>
     
-    <!-- Main App Container with padding for active users panel -->
+    <!-- Main App -->
     <div id="mainContent">
         <div id="app"></div>
     </div>
@@ -121,108 +93,71 @@
     <script>
         // Global variables
         let appInstance = null;
-        let sessionId = null;
         let userName = null;
         let socket = null;
         let notificationCount = 0;
-        let originalRawDataBackup = null; // Store original data for undo
+        let originalRawDataBackup = null;
         
-        async function handleJoinSession() {
-            console.log('handleJoinSession called');
-            
-            const sessionNameInput = document.getElementById('sessionName').value.trim();
+        // Fixed session ID - always the same
+        const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
+        
+        async function joinTeam() {
             const userNameInput = document.getElementById('userName').value.trim();
             
-            if (!sessionNameInput || !userNameInput) {
-                alert('Please enter both session name and your name');
+            if (!userNameInput) {
+                alert('Please enter your name');
                 return;
             }
             
-            const joinBtn = document.getElementById('joinSessionBtn');
+            const joinBtn = document.getElementById('joinBtn');
             joinBtn.disabled = true;
             joinBtn.textContent = 'Joining...';
             
             try {
-                // Call the API to join session
                 const response = await fetch('/api/session/join', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        sessionName: sessionNameInput, 
-                        userName: userNameInput 
-                    })
+                    body: JSON.stringify({ userName: userNameInput })
                 });
                 
                 const data = await response.json();
-                console.log('Join response:', data);
                 
                 if (data.success) {
-                    sessionId = data.sessionId;
                     userName = userNameInput;
                     
-                    // Hide modal
-                    document.getElementById('sessionModal').style.display = 'none';
+                    // Hide login modal
+                    document.getElementById('loginModal').style.display = 'none';
                     
                     // Show active users panel
                     document.getElementById('activeUsersPanel').classList.remove('hidden');
                     
-                    // Initialize the app if not already initialized
+                    // Initialize app
                     if (!appInstance) {
-                        console.log('Creating new DemandTransferApp instance');
                         appInstance = new DemandTransferApp();
                     }
                     
-                    // Set up multi-user features
-                    setupMultiUserFeatures();
+                    // Setup features
+                    setupFeatures();
                     
-                    // Load session data
-                    loadSessionData();
+                    // Load data
+                    loadTeamData();
                     
-                    showNotification('Successfully joined session!', 'success');
+                    showNotification(`Welcome ${userName}!`, 'success');
                 }
             } catch (error) {
-                console.error('Error joining session:', error);
-                alert('Failed to join session: ' + error.message);
+                console.error('Error joining:', error);
+                alert('Failed to join team');
                 joinBtn.disabled = false;
-                joinBtn.textContent = 'Join Session';
-            }
-        }
-        
-        async function endSession() {
-            if (!confirm('Are you sure you want to end this session? This will clear all data and disconnect all users.')) {
-                return;
-            }
-            
-            try {
-                // Call the end session endpoint
-                const response = await fetch(`/api/session/${sessionId}/end`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userName })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    alert('Session ended successfully. All data has been cleared.');
-                    // Reload the page to start fresh
-                    window.location.reload();
-                }
-            } catch (error) {
-                console.error('Error ending session:', error);
-                alert('Failed to end session: ' + error.message);
+                joinBtn.textContent = 'Join Team';
             }
         }
         
         function showNotification(message, type = 'info') {
-            const notificationsContainer = document.getElementById('notifications');
+            const container = document.getElementById('notifications');
             const notification = document.createElement('div');
+            const id = `notification-${++notificationCount}`;
+            notification.id = id;
             
-            // Assign unique ID
-            const notificationId = `notification-${++notificationCount}`;
-            notification.id = notificationId;
-            
-            // Style based on type
             const colors = {
                 success: 'bg-green-500',
                 error: 'bg-red-500',
@@ -231,76 +166,42 @@
             };
             
             notification.className = `${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg notification-enter`;
-            notification.innerHTML = `
-                <div class="flex items-center justify-between">
-                    <span>${message}</span>
-                    <button onclick="closeNotification('${notificationId}')" class="ml-4 text-white hover:text-gray-200">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-            `;
+            notification.innerHTML = `<span>${message}</span>`;
             
-            notificationsContainer.appendChild(notification);
+            container.appendChild(notification);
             
-            // Auto-remove after 5 seconds
             setTimeout(() => {
-                closeNotification(notificationId);
+                const el = document.getElementById(id);
+                if (el) el.remove();
             }, 5000);
         }
         
-        function closeNotification(notificationId) {
-            const notification = document.getElementById(notificationId);
-            if (notification) {
-                notification.classList.remove('notification-enter');
-                notification.classList.add('notification-exit');
-                setTimeout(() => {
-                    notification.remove();
-                }, 300);
-            }
-        }
-        
-        // Helper function to preserve scroll position
         function preserveScrollPosition(callback) {
-            // Get all scrollable containers
             const dfuListContainer = document.querySelector('.space-y-2.h-full.overflow-y-auto');
-            const scrollPositions = [];
+            const scrollTop = dfuListContainer ? dfuListContainer.scrollTop : 0;
             
-            if (dfuListContainer) {
-                scrollPositions.push({
-                    element: dfuListContainer,
-                    top: dfuListContainer.scrollTop
-                });
-            }
-            
-            // Execute the callback
             callback();
             
-            // Restore scroll positions after a short delay
             setTimeout(() => {
-                scrollPositions.forEach(({ element, top }) => {
-                    if (element && document.body.contains(element)) {
-                        element.scrollTop = top;
-                    }
-                });
+                if (dfuListContainer) {
+                    dfuListContainer.scrollTop = scrollTop;
+                }
             }, 50);
         }
         
-        function setupMultiUserFeatures() {
-            if (!appInstance) return;
-            
+        function setupFeatures() {
             // Connect WebSocket
             socket = io();
             
             socket.on('connect', () => {
-                console.log('WebSocket connected');
-                socket.emit('joinSession', { sessionId, userName });
+                console.log('Connected to server');
+                socket.emit('joinSession', { userName });
             });
             
             socket.on('userJoined', ({ userName: newUser }) => {
-                console.log('User joined:', newUser);
-                showNotification(`${newUser} joined the session`, 'info');
+                if (newUser !== userName) {
+                    showNotification(`${newUser} joined the team`, 'info');
+                }
             });
             
             socket.on('activeUsers', (users) => {
@@ -315,89 +216,50 @@
                 }
             });
             
-            socket.on('dataUploaded', () => {
-                console.log('Data uploaded by another user');
-                showNotification('Another user uploaded data', 'info');
-                loadSessionData();
+            socket.on('dataUploaded', ({ uploadedBy }) => {
+                if (uploadedBy !== userName) {
+                    showNotification(`${uploadedBy} uploaded new data`, 'info');
+                    loadTeamData();
+                }
+            });
+            
+            socket.on('cycleDataUploaded', ({ uploadedBy }) => {
+                if (uploadedBy !== userName) {
+                    showNotification(`${uploadedBy} uploaded cycle dates`, 'info');
+                    loadTeamData();
+                }
             });
             
             socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
-                console.log('Data updated by another user:', updatedBy);
                 if (updatedBy !== userName) {
-                    showNotification(`${updatedBy} completed transfer for DFU ${dfuCode}`, 'info');
-                    // Reload data to get the latest changes
-                    loadSessionData();
+                    showNotification(`${updatedBy} updated DFU ${dfuCode}`, 'info');
+                    loadTeamData();
                 }
-            });
-            
-            socket.on('cycleDataUploaded', ({ dfuCount, uploadedBy }) => {
-                console.log('Cycle data uploaded by:', uploadedBy);
-                if (uploadedBy !== userName) {
-                    showNotification(`${uploadedBy} uploaded variant cycle dates for ${dfuCount} DFUs`, 'info');
-                }
-                // Reload data to get the cycle data
-                loadSessionData();
             });
             
             socket.on('transferUndone', ({ dfuCode, undoneBy }) => {
-                console.log('Transfer undone by:', undoneBy);
                 if (undoneBy !== userName) {
                     showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
+                    loadTeamData();
                 }
-                // Reload data to get the restored state
-                loadSessionData();
             });
             
-            socket.on('sessionEnded', ({ endedBy }) => {
-                alert(`Session ended by ${endedBy}. All data has been cleared.`);
+            socket.on('dataCleared', ({ clearedBy }) => {
+                showNotification(`${clearedBy} cleared all data`, 'warning');
                 window.location.reload();
             });
             
-            // Override loadData method - upload file and let client process it
-            const originalLoadData = appInstance.loadData.bind(appInstance);
+            // Override app methods for simplified API
             appInstance.loadData = async function(file) {
-                console.log('Multi-user loadData');
-                
                 this.isLoading = true;
                 this.render();
-                
-                const formData = new FormData();
-                formData.append('file', file);
-                
-                try {
-                    const response = await fetch(`/api/upload/${sessionId}`, {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showNotification(`Successfully uploaded ${result.rowCount} records`, 'success');
-                        await loadSessionData();
-                    } else {
-                        showNotification('Failed to upload file: ' + result.error, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error uploading:', error);
-                    showNotification('Upload failed: ' + error.message, 'error');
-                } finally {
-                    this.isLoading = false;
-                    this.render();
-                }
-            };
-            
-            // Override loadVariantCycleData for multi-user sync
-            const originalLoadVariantCycleData = appInstance.loadVariantCycleData.bind(appInstance);
-            appInstance.loadVariantCycleData = async function(file) {
-                console.log('Multi-user loadVariantCycleData');
                 
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('userName', userName);
                 
                 try {
-                    const response = await fetch(`/api/upload-cycle/${sessionId}`, {
+                    const response = await fetch('/api/upload', {
                         method: 'POST',
                         body: formData
                     });
@@ -405,169 +267,125 @@
                     const result = await response.json();
                     
                     if (result.success) {
-                        showNotification(`Successfully uploaded ${result.recordCount} variant cycle records for ${result.dfuCount} DFUs`, 'success');
-                        // The cycle data will be loaded when we reload session data
-                        await loadSessionData();
+                        showNotification(`Uploaded ${result.rowCount} records`, 'success');
+                        await loadTeamData();
                     } else {
-                        showNotification('Failed to upload cycle data: ' + result.error, 'error');
+                        showNotification('Upload failed', 'error');
                     }
                 } catch (error) {
-                    console.error('Error uploading cycle data:', error);
-                    showNotification('Upload failed: ' + error.message, 'error');
+                    showNotification('Upload error: ' + error.message, 'error');
+                } finally {
+                    this.isLoading = false;
+                    this.render();
                 }
             };
             
-            // Override undoTransfer to sync with server
-            const originalUndoTransfer = appInstance.undoTransfer.bind(appInstance);
-            appInstance.undoTransfer = async function(dfuCode) {
-                console.log('Multi-user undoTransfer for DFU:', dfuCode);
+            appInstance.loadVariantCycleData = async function(file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('userName', userName);
                 
                 try {
-                    // First, tell the server to undo the transfer
-                    const response = await fetch(`/api/session/${sessionId}/undoTransfer`, {
+                    const response = await fetch('/api/upload-cycle', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            dfuCode,
-                            userName
-                        })
+                        body: formData
                     });
                     
                     const result = await response.json();
                     
                     if (result.success) {
-                        // Restore from the server's original data
-                        if (originalRawDataBackup) {
-                            this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
-                        }
-                        
-                        // Clear local transfer states
-                        delete this.completedTransfers[dfuCode];
-                        delete this.transfers[dfuCode];
-                        delete this.bulkTransfers[dfuCode];
-                        delete this.granularTransfers[dfuCode];
-                        delete this.lastExecutionSummary[dfuCode];
-                        
-                        // Re-process the data
-                        this.multiVariantDFUs = {};
-                        this.filteredDFUs = {};
-                        this.processMultiVariantDFUs(this.rawData);
-                        
-                        showNotification(`Transfer undone for DFU ${dfuCode}`, 'success');
-                        
-                        // Preserve scroll position when rendering
-                        preserveScrollPosition(() => {
-                            this.render();
-                        });
-                        
-                        // Save the restored state to server
-                        await fetch(`/api/session/${sessionId}/updateData`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                rawData: this.rawData,
-                                completedTransfers: this.completedTransfers || {},
-                                transfer: {
-                                    dfuCode,
-                                    type: 'undo',
-                                    completedBy: userName
-                                }
-                            })
-                        });
+                        showNotification(`Uploaded cycle dates for ${result.dfuCount} DFUs`, 'success');
+                        await loadTeamData();
                     }
                 } catch (error) {
-                    console.error('Error undoing transfer:', error);
-                    showNotification('Failed to undo transfer', 'error');
+                    showNotification('Cycle upload failed', 'error');
                 }
             };
             
-            // Override selectDFU to preserve scroll position
-            const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
-            appInstance.selectDFU = function(dfuCode) {
-                preserveScrollPosition(() => {
-                    originalSelectDFU(dfuCode);
-                });
-            };
-            
-            // Override executeTransfer - let it work normally on client side
-            // Just save the modified data after execution
             const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
             appInstance.executeTransfer = function(dfuCode) {
-                console.log('Executing transfer with original logic');
-                
-                // Execute with original logic (this modifies this.rawData and sets completedTransfers)
                 originalExecuteTransfer(dfuCode);
                 
-                // After execution, save the modified rawData to server
                 setTimeout(() => {
-                    console.log('Saving modified data to server after transfer');
-                    
-                    // Get the completed transfers to sync status
-                    const completedTransfers = this.completedTransfers || {};
-                    
-                    // Save the entire modified dataset back to server
-                    fetch(`/api/session/${sessionId}/updateData`, {
+                    fetch('/api/updateData', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             rawData: this.rawData,
-                            completedTransfers: completedTransfers,
+                            completedTransfers: this.completedTransfers || {},
                             transfer: {
                                 dfuCode,
-                                type: this.bulkTransfers[dfuCode] ? 'bulk' : 
-                                      (this.granularTransfers[dfuCode] && Object.keys(this.granularTransfers[dfuCode]).length > 0) ? 'granular' : 
-                                      'individual',
-                                targetVariant: this.bulkTransfers[dfuCode],
-                                transfers: this.transfers[dfuCode],
-                                granularTransfers: this.granularTransfers[dfuCode],
+                                type: this.bulkTransfers[dfuCode] ? 'bulk' : 'individual',
                                 completedBy: userName
                             }
                         })
-                    }).then(response => response.json())
-                      .then(data => {
-                          console.log('Data saved to server:', data);
-                          showNotification('Transfer completed and saved', 'success');
-                      })
-                      .catch(error => {
-                          console.error('Error saving data:', error);
-                          showNotification('Transfer completed locally but failed to save to server', 'warning');
-                      });
+                    }).then(() => {
+                        showNotification('Transfer saved', 'success');
+                    });
                 }, 500);
             };
             
-            // Override exportData method - just download the current rawData
-            appInstance.exportData = async function() {
-                console.log('Multi-user exportData');
-                
+            appInstance.undoTransfer = async function(dfuCode) {
                 try {
-                    // Use the original export logic to format dates properly
-                    const formattedData = this.rawData.map(record => {
-                        const formattedRecord = { ...record };
-                        
-                        // Format Calendar.week if it exists
-                        if (formattedRecord['Calendar.week']) {
-                            const dateValue = formattedRecord['Calendar.week'];
-                            if (dateValue) {
-                                const date = new Date(dateValue);
-                                if (!isNaN(date.getTime())) {
-                                    const year = date.getFullYear();
-                                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                                    const day = String(date.getDate()).padStart(2, '0');
-                                    formattedRecord['Calendar.week'] = `${year}-${month}-${day}`;
-                                }
-                            }
-                        }
-                        
-                        return formattedRecord;
+                    await fetch('/api/undoTransfer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ dfuCode, userName })
                     });
                     
-                    // Send formatted data to server for export
-                    const response = await fetch(`/api/session/${sessionId}/export`, {
+                    if (originalRawDataBackup) {
+                        this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
+                    }
+                    
+                    delete this.completedTransfers[dfuCode];
+                    delete this.transfers[dfuCode];
+                    delete this.bulkTransfers[dfuCode];
+                    delete this.granularTransfers[dfuCode];
+                    
+                    this.processMultiVariantDFUs(this.rawData);
+                    
+                    showNotification('Transfer undone', 'success');
+                    
+                    preserveScrollPosition(() => {
+                        this.render();
+                    });
+                    
+                    // Update server with restored data
+                    await fetch('/api/updateData', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
-                            rawData: formattedData
+                            rawData: this.rawData,
+                            completedTransfers: this.completedTransfers || {},
+                            transfer: {
+                                dfuCode,
+                                type: 'undo',
+                                completedBy: userName
+                            }
                         })
+                    });
+                } catch (error) {
+                    showNotification('Undo failed', 'error');
+                }
+            };
+            
+            appInstance.exportData = async function() {
+                try {
+                    const formattedData = this.rawData.map(record => {
+                        const formatted = { ...record };
+                        if (formatted['Calendar.week']) {
+                            const date = new Date(formatted['Calendar.week']);
+                            if (!isNaN(date.getTime())) {
+                                formatted['Calendar.week'] = date.toISOString().split('T')[0];
+                            }
+                        }
+                        return formatted;
+                    });
+                    
+                    const response = await fetch('/api/export', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ rawData: formattedData })
                     });
                     
                     if (response.ok) {
@@ -575,70 +393,73 @@
                         const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = `DFU_Transfers_${sessionId}_${Date.now()}.xlsx`;
+                        a.download = `DFU_Transfers_${Date.now()}.xlsx`;
                         a.click();
-                        showNotification('File exported successfully', 'success');
+                        showNotification('Export successful', 'success');
                     }
                 } catch (error) {
-                    console.error('Error exporting:', error);
                     showNotification('Export failed', 'error');
                 }
             };
             
-            // Override showNotification to use our custom notification system
+            const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
+            appInstance.selectDFU = function(dfuCode) {
+                preserveScrollPosition(() => {
+                    originalSelectDFU(dfuCode);
+                });
+            };
+            
             appInstance.showNotification = showNotification;
         }
         
-        async function loadSessionData() {
-            if (!appInstance || !sessionId) return;
+        async function loadTeamData() {
+            if (!appInstance) return;
             
             try {
-                const response = await fetch(`/api/session/${sessionId}/data`);
+                const response = await fetch('/api/session/data');
                 const data = await response.json();
                 
                 if (data.rawData && data.rawData.length > 0) {
                     appInstance.rawData = data.rawData;
                     appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
-                    
-                    // Keep a backup of the original data for undo functionality
                     originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
                     
-                    // Restore completed transfers status
                     if (data.completedTransfers) {
                         appInstance.completedTransfers = data.completedTransfers;
                     }
                     
-                    // Load variant cycle data if it exists
-                    if (data.variantCycleData && Object.keys(data.variantCycleData).length > 0) {
+                    if (data.variantCycleData) {
                         appInstance.variantCycleDates = data.variantCycleData;
                         appInstance.hasVariantCycleData = true;
-                        console.log('Loaded variant cycle data for', Object.keys(data.variantCycleData).length, 'DFUs');
                     }
                     
-                    // Preserve scroll position when processing data
                     preserveScrollPosition(() => {
                         appInstance.processMultiVariantDFUs(data.rawData);
                         appInstance.isProcessed = true;
                         appInstance.render();
                     });
-                } else if (data.variantCycleData && Object.keys(data.variantCycleData).length > 0) {
-                    // Even if no main data, load cycle data if it exists
-                    appInstance.variantCycleDates = data.variantCycleData;
-                    appInstance.hasVariantCycleData = true;
-                    console.log('Loaded variant cycle data (no main data yet)');
-                    appInstance.render();
                 }
             } catch (error) {
-                console.error('Error loading session data:', error);
-                showNotification('Failed to load session data', 'error');
+                console.error('Error loading data:', error);
             }
         }
         
-        // Modify the DemandTransferApp to not auto-initialize
-        document.addEventListener('DOMContentLoaded', function() {
-            // The app will be created only after joining a session
-            console.log('DOM ready, waiting for session join...');
-        });
+        async function clearAllData() {
+            if (!confirm('Clear all data? This cannot be undone.')) return;
+            
+            try {
+                await fetch('/api/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userName })
+                });
+                
+                showNotification('All data cleared', 'warning');
+                setTimeout(() => window.location.reload(), 1000);
+            } catch (error) {
+                showNotification('Failed to clear data', 'error');
+            }
+        }
     </script>
 </body>
 </html>

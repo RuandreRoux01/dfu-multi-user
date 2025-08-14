@@ -19,22 +19,22 @@ const io = socketIo(server, {
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increase limit for large data
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-// Debug middleware for API routes
+// Debug middleware
 app.use('/api', (req, res, next) => {
     console.log(`[API] ${req.method} ${req.path}`);
-    console.log(`[API] Full URL: ${req.originalUrl}`);
     next();
 });
 
 // MongoDB connection
 let db;
 const mongoUri = process.env.MONGODB_URI;
-
-// Add connection status flag
 let isDbConnected = false;
+
+// SINGLE SESSION ID - Always use the same one
+const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
 
 MongoClient.connect(mongoUri)
     .then(client => {
@@ -45,72 +45,20 @@ MongoClient.connect(mongoUri)
     })
     .catch(error => {
         console.error('[DB] MongoDB connection error:', error);
-        console.log('Please check your connection string in .env file');
     });
 
-// Initialize database collections
+// Initialize database and ensure team session exists
 async function initializeCollections() {
     try {
         await db.createCollection('sessions');
         await db.createCollection('transfers');
-        console.log('[DB] Database collections ready!');
-    } catch (error) {
-        console.log('[DB] Collections might already exist, that\'s okay!');
-    }
-}
-
-// File upload setup
-const storage = multer.memoryStorage();
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
-});
-
-// Store active sessions in memory
-const activeSessions = new Map();
-
-// Database connection check middleware
-const checkDbConnection = (req, res, next) => {
-    if (!isDbConnected || !db) {
-        console.error('[DB] Database not connected - request blocked');
-        return res.status(503).json({ 
-            error: 'Database connection not ready. Please try again in a moment.' 
-        });
-    }
-    next();
-};
-
-// ============= REST API ENDPOINTS =============
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'Server is running!', 
-        database: isDbConnected ? 'Connected' : 'Not connected',
-        timestamp: new Date().toISOString()
-    });
-});
-
-// Create or join a session - with DB check
-app.post('/api/session/join', checkDbConnection, async (req, res) => {
-    try {
-        const { sessionName, userName } = req.body;
         
-        console.log(`[SESSION] Join request - Session: ${sessionName}, User: ${userName}`);
-        
-        if (!sessionName || !userName) {
-            return res.status(400).json({ error: 'Session name and user name are required' });
-        }
-        
-        // Find or create session by name
-        let session = await db.collection('sessions').findOne({ name: sessionName });
-        
-        if (!session) {
-            // Create new session with a simple string ID
-            const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            session = {
-                _id: sessionId,
-                name: sessionName,
+        // Ensure the team session exists
+        const existingSession = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        if (!existingSession) {
+            await db.collection('sessions').insertOne({
+                _id: TEAM_SESSION_ID,
+                name: 'Team DFU Transfer Session',
                 createdAt: new Date(),
                 users: [],
                 dataUploaded: false,
@@ -119,60 +67,103 @@ app.post('/api/session/join', checkDbConnection, async (req, res) => {
                 hasVariantCycleData: false,
                 completedTransfers: {},
                 status: 'active'
-            };
-            await db.collection('sessions').insertOne(session);
-            console.log(`[SESSION] New session created: ${sessionName} with ID: ${sessionId}`);
+            });
+            console.log('[DB] Team session created');
         } else {
-            console.log(`[SESSION] Existing session found: ${session._id}`);
+            console.log('[DB] Team session already exists');
         }
         
-        // Add user to session if not already present
-        const existingUser = session.users ? session.users.find(u => u.name === userName) : null;
-        if (!existingUser) {
-            const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-            await db.collection('sessions').updateOne(
-                { _id: session._id },
-                { 
-                    $push: { users: { id: userId, name: userName, joinedAt: new Date() } }
+        console.log('[DB] Database ready!');
+    } catch (error) {
+        console.log('[DB] Error initializing:', error);
+    }
+}
+
+// File upload setup
+const storage = multer.memoryStorage();
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 50 * 1024 * 1024 }
+});
+
+// Store active users in memory
+const activeUsers = new Set();
+
+// Database check middleware
+const checkDbConnection = (req, res, next) => {
+    if (!isDbConnected || !db) {
+        return res.status(503).json({ 
+            error: 'Database connection not ready. Please try again.' 
+        });
+    }
+    next();
+};
+
+// ============= REST API ENDPOINTS =============
+
+// Health check
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'Server is running!', 
+        database: isDbConnected ? 'Connected' : 'Not connected',
+        sessionId: TEAM_SESSION_ID
+    });
+});
+
+// Join the team session (simplified - just add user)
+app.post('/api/session/join', checkDbConnection, async (req, res) => {
+    try {
+        const { userName } = req.body;
+        
+        if (!userName) {
+            return res.status(400).json({ error: 'User name is required' });
+        }
+        
+        console.log(`[SESSION] ${userName} joining team session`);
+        
+        // Add user to active users list
+        const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Update session with user info (optional - for persistence)
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
+            { 
+                $addToSet: { 
+                    users: { 
+                        id: userId, 
+                        name: userName, 
+                        joinedAt: new Date() 
+                    }
                 }
-            );
-        }
+            }
+        );
         
-        console.log(`[SESSION] ${userName} joined session: ${sessionName} (${session._id})`);
+        console.log(`[SESSION] ${userName} joined successfully`);
         
         res.json({ 
             success: true,
-            sessionId: session._id,
-            sessionName: session.name,
-            userId: existingUser ? existingUser.id : `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+            sessionId: TEAM_SESSION_ID,  // Always the same
+            sessionName: 'Team Session',
+            userId: userId,
+            userName: userName
         });
     } catch (error) {
-        console.error('[SESSION] Error joining session:', error);
-        res.status(500).json({ error: 'Failed to join session: ' + error.message });
+        console.error('[SESSION] Error joining:', error);
+        res.status(500).json({ error: 'Failed to join session' });
     }
 });
 
-// Upload Excel file - with better error handling
-app.post('/api/upload/:sessionId', checkDbConnection, upload.single('file'), async (req, res) => {
+// Upload Excel file (simplified)
+app.post('/api/upload', checkDbConnection, upload.single('file'), async (req, res) => {
     try {
-        const { sessionId } = req.params;
         const file = req.file;
-        
-        console.log(`[UPLOAD] Processing file for session: ${sessionId}`);
-        console.log(`[UPLOAD] File info: ${file ? `${file.originalname} (${file.size} bytes)` : 'No file'}`);
+        const userName = req.body.userName || 'Unknown User';
         
         if (!file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
-        // Check if session exists
-        const sessionExists = await db.collection('sessions').findOne({ _id: sessionId });
-        if (!sessionExists) {
-            console.error(`[UPLOAD] Session not found: ${sessionId}`);
-            return res.status(404).json({ error: `Session not found: ${sessionId}` });
-        }
-        
-        console.log(`[UPLOAD] Session found: ${sessionExists.name}`);
+        console.log(`[UPLOAD] Processing file from ${userName}`);
         
         // Parse Excel file
         const workbook = XLSX.read(file.buffer, { type: 'buffer' });
@@ -180,35 +171,24 @@ app.post('/api/upload/:sessionId', checkDbConnection, upload.single('file'), asy
         const worksheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(worksheet);
         
-        console.log(`[UPLOAD] Parsed ${data.length} rows from Excel file`);
+        console.log(`[UPLOAD] Parsed ${data.length} rows`);
         
-        if (data.length === 0) {
-            return res.status(400).json({ error: 'Excel file contains no data' });
-        }
-        
-        // Store raw data in session
-        const updateResult = await db.collection('sessions').updateOne(
-            { _id: sessionId },
+        // Store in the team session
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
                     rawData: data,
                     dataUploaded: true,
                     uploadedAt: new Date(),
-                    completedTransfers: {} // Reset completed transfers on new upload
+                    uploadedBy: userName,
+                    completedTransfers: {}
                 }
             }
         );
         
-        console.log(`[UPLOAD] Update result: ${updateResult.modifiedCount} document(s) modified`);
-        
-        if (updateResult.modifiedCount === 0 && updateResult.matchedCount === 0) {
-            console.error(`[UPLOAD] Failed to update session - session might have been deleted`);
-            return res.status(404).json({ error: 'Session no longer exists' });
-        }
-        
-        // Process multi-variant DFUs for summary
+        // Process multi-variant DFUs
         const multiVariantDFUs = processMultiVariantDFUs(data);
-        console.log(`[UPLOAD] Found ${Object.keys(multiVariantDFUs).length} multi-variant DFUs`);
         
         res.json({ 
             success: true, 
@@ -216,35 +196,29 @@ app.post('/api/upload/:sessionId', checkDbConnection, upload.single('file'), asy
             dfuCount: Object.keys(multiVariantDFUs).length 
         });
         
-        // Notify all connected clients
-        io.to(sessionId).emit('dataUploaded', { 
+        // Notify all connected users
+        io.emit('dataUploaded', { 
             dfuCount: Object.keys(multiVariantDFUs).length,
-            uploadedBy: req.body.userName || 'Unknown User'
+            uploadedBy: userName
         });
         
     } catch (error) {
-        console.error('[UPLOAD] Error uploading file:', error);
-        res.status(500).json({ error: 'Failed to process file: ' + error.message });
+        console.error('[UPLOAD] Error:', error);
+        res.status(500).json({ error: 'Failed to process file' });
     }
 });
 
-// Upload Variant Cycle Dates file
-app.post('/api/upload-cycle/:sessionId', checkDbConnection, upload.single('file'), async (req, res) => {
+// Upload variant cycle dates
+app.post('/api/upload-cycle', checkDbConnection, upload.single('file'), async (req, res) => {
     try {
-        const { sessionId } = req.params;
         const file = req.file;
+        const userName = req.body.userName || 'Unknown User';
         
         if (!file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
-        console.log(`[CYCLE] Processing variant cycle dates file for session: ${sessionId}`);
-        
-        // Check if session exists
-        const sessionExists = await db.collection('sessions').findOne({ _id: sessionId });
-        if (!sessionExists) {
-            return res.status(404).json({ error: 'Session not found' });
-        }
+        console.log(`[CYCLE] Processing cycle file from ${userName}`);
         
         // Parse Excel file
         const workbook = XLSX.read(file.buffer, { type: 'buffer' });
@@ -252,18 +226,14 @@ app.post('/api/upload-cycle/:sessionId', checkDbConnection, upload.single('file'
         const worksheet = workbook.Sheets[sheetName];
         const cycleData = XLSX.utils.sheet_to_json(worksheet);
         
-        console.log(`[CYCLE] Parsed ${cycleData.length} cycle date records`);
-        
-        // Process the cycle data into a more usable format
+        // Process cycle data
         const processedCycleData = {};
         cycleData.forEach(record => {
-            // Find the DFU and Part Code columns (case-insensitive)
-            const dfuCode = record['DFU'] || record['dfu'] || record['Dfu'];
-            const partCode = record['Part Code'] || record['PART CODE'] || record['Part_Code'] || 
-                           record['Product Number'] || record['Part Number'];
-            const sos = record['SOS'] || record['sos'] || record['Sos'];
-            const eos = record['EOS'] || record['eos'] || record['Eos'];
-            const comments = record['Comments'] || record['COMMENTS'] || record['Comment'] || '';
+            const dfuCode = record['DFU'] || record['dfu'];
+            const partCode = record['Part Code'] || record['Product Number'];
+            const sos = record['SOS'] || record['sos'];
+            const eos = record['EOS'] || record['eos'];
+            const comments = record['Comments'] || '';
             
             if (dfuCode && partCode) {
                 if (!processedCycleData[dfuCode]) {
@@ -277,21 +247,18 @@ app.post('/api/upload-cycle/:sessionId', checkDbConnection, upload.single('file'
             }
         });
         
-        console.log(`[CYCLE] Processed cycle data for ${Object.keys(processedCycleData).length} DFUs`);
-        
-        // Store cycle data in session
-        const updateResult = await db.collection('sessions').updateOne(
-            { _id: sessionId },
+        // Update session
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
                     variantCycleData: processedCycleData,
                     hasVariantCycleData: true,
-                    cycleDataUploadedAt: new Date()
+                    cycleDataUploadedAt: new Date(),
+                    cycleDataUploadedBy: userName
                 }
             }
         );
-        
-        console.log(`[CYCLE] Update result: ${updateResult.modifiedCount} document(s) modified`);
         
         res.json({ 
             success: true, 
@@ -299,41 +266,28 @@ app.post('/api/upload-cycle/:sessionId', checkDbConnection, upload.single('file'
             dfuCount: Object.keys(processedCycleData).length
         });
         
-        // Notify all connected clients that cycle data was uploaded
-        io.to(sessionId).emit('cycleDataUploaded', { 
+        // Notify all users
+        io.emit('cycleDataUploaded', { 
             dfuCount: Object.keys(processedCycleData).length,
-            uploadedBy: req.body.userName || 'Unknown User'
+            uploadedBy: userName
         });
         
     } catch (error) {
-        console.error('[CYCLE] Error uploading cycle data file:', error);
-        res.status(500).json({ error: 'Failed to process cycle data file: ' + error.message });
+        console.error('[CYCLE] Error:', error);
+        res.status(500).json({ error: 'Failed to process cycle data' });
     }
 });
 
-// Get session data
-app.get('/api/session/:sessionId/data', checkDbConnection, async (req, res) => {
+// Get session data (simplified)
+app.get('/api/session/data', checkDbConnection, async (req, res) => {
     try {
-        const { sessionId } = req.params;
-        
-        console.log(`[DATA] Getting data for session: ${sessionId}`);
-        
-        const session = await db.collection('sessions').findOne({ 
-            _id: sessionId
-        });
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
         
         if (!session) {
-            console.log(`[DATA] Session not found: ${sessionId}`);
-            // Instead of 404, return empty data structure
+            // Should never happen, but handle it
             return res.json({
-                session: {
-                    name: 'Session Not Found',
-                    dataUploaded: false,
-                    userCount: 0,
-                    hasVariantCycleData: false
-                },
+                session: { name: 'Team Session', dataUploaded: false },
                 multiVariantDFUs: {},
-                transfers: [],
                 rawData: [],
                 completedTransfers: {},
                 variantCycleData: {},
@@ -341,34 +295,20 @@ app.get('/api/session/:sessionId/data', checkDbConnection, async (req, res) => {
             });
         }
         
-        console.log(`[DATA] Found session: ${session.name}`);
-        console.log(`[DATA] Data uploaded: ${session.dataUploaded || false}`);
-        console.log(`[DATA] Raw data records: ${session.rawData ? session.rawData.length : 0}`);
-        console.log(`[DATA] Has cycle data: ${session.hasVariantCycleData || false}`);
-        
-        // Process multi-variant DFUs if data exists
+        // Process multi-variant DFUs
         let multiVariantDFUs = {};
         if (session.rawData && session.rawData.length > 0) {
             multiVariantDFUs = processMultiVariantDFUs(session.rawData);
-            console.log(`[DATA] Processed ${Object.keys(multiVariantDFUs).length} multi-variant DFUs`);
         }
-        
-        // Get transfers for this session
-        const transfers = await db.collection('transfers').find({ 
-            sessionId: sessionId 
-        }).toArray();
-        
-        console.log(`[DATA] Found ${transfers.length} transfers for session`);
         
         res.json({
             session: {
                 name: session.name,
                 dataUploaded: session.dataUploaded || false,
-                userCount: session.users ? session.users.length : 0,
+                userCount: activeUsers.size,
                 hasVariantCycleData: session.hasVariantCycleData || false
             },
-            multiVariantDFUs: multiVariantDFUs || {},
-            transfers: transfers || [],
+            multiVariantDFUs: multiVariantDFUs,
             rawData: session.rawData || [],
             completedTransfers: session.completedTransfers || {},
             variantCycleData: session.variantCycleData || {},
@@ -376,69 +316,20 @@ app.get('/api/session/:sessionId/data', checkDbConnection, async (req, res) => {
         });
         
     } catch (error) {
-        console.error('[DATA] Error getting session data:', error);
-        // Return empty structure instead of error
-        res.json({
-            session: {
-                name: 'Error Loading Session',
-                dataUploaded: false,
-                userCount: 0,
-                hasVariantCycleData: false
-            },
-            multiVariantDFUs: {},
-            transfers: [],
-            rawData: [],
-            completedTransfers: {},
-            variantCycleData: {},
-            hasVariantCycleData: false
-        });
+        console.error('[DATA] Error:', error);
+        res.status(500).json({ error: 'Failed to get data' });
     }
 });
 
-// Save transfer configuration
-app.post('/api/session/:sessionId/transfer', checkDbConnection, async (req, res) => {
+// Update data after transfer
+app.post('/api/updateData', checkDbConnection, async (req, res) => {
     try {
-        const { sessionId } = req.params;
-        const { dfuCode, transferConfig, userName } = req.body;
-        
-        await db.collection('transfers').updateOne(
-            { sessionId, dfuCode },
-            { 
-                $set: { 
-                    ...transferConfig,
-                    sessionId,
-                    dfuCode,
-                    updatedBy: userName,
-                    updatedAt: new Date()
-                }
-            },
-            { upsert: true }
-        );
-        
-        console.log(`[TRANSFER] Transfer saved for DFU ${dfuCode} by ${userName}`);
-        
-        res.json({ success: true });
-        
-        // Notify other users
-        io.to(sessionId).emit('transferUpdated', { dfuCode, transferConfig, userName });
-        
-    } catch (error) {
-        console.error('[TRANSFER] Error saving transfer:', error);
-        res.status(500).json({ error: 'Failed to save transfer: ' + error.message });
-    }
-});
-
-// Update session data after client-side transfer
-app.post('/api/session/:sessionId/updateData', checkDbConnection, async (req, res) => {
-    try {
-        const { sessionId } = req.params;
         const { rawData, completedTransfers, transfer } = req.body;
         
-        console.log(`[UPDATE] Updating session data after transfer for DFU: ${transfer.dfuCode}`);
+        console.log(`[UPDATE] Transfer by ${transfer.completedBy} for DFU ${transfer.dfuCode}`);
         
-        // Update the session with the modified data and completed transfers
         await db.collection('sessions').updateOne(
-            { _id: sessionId },
+            { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
                     rawData: rawData,
@@ -449,57 +340,35 @@ app.post('/api/session/:sessionId/updateData', checkDbConnection, async (req, re
             }
         );
         
-        // Log the transfer (only if not an undo operation)
-        if (transfer.type !== 'undo') {
-            await db.collection('transfers').insertOne({
-                sessionId,
-                dfuCode: transfer.dfuCode,
-                type: transfer.type,
-                targetVariant: transfer.targetVariant,
-                transfers: transfer.transfers,
-                granularTransfers: transfer.granularTransfers,
-                completedBy: transfer.completedBy,
-                completedAt: new Date()
-            });
-        }
-        
-        console.log(`[UPDATE] Data updated successfully`);
         res.json({ success: true });
         
-        // Notify other users
-        io.to(sessionId).emit('dataUpdated', { 
+        // Notify all users
+        io.emit('dataUpdated', { 
             dfuCode: transfer.dfuCode,
             updatedBy: transfer.completedBy 
         });
         
     } catch (error) {
-        console.error('[UPDATE] Error updating data:', error);
+        console.error('[UPDATE] Error:', error);
         res.status(500).json({ error: 'Failed to update data' });
     }
 });
 
-// Undo transfer - restore original data for a DFU
-app.post('/api/session/:sessionId/undoTransfer', checkDbConnection, async (req, res) => {
+// Undo transfer
+app.post('/api/undoTransfer', checkDbConnection, async (req, res) => {
     try {
-        const { sessionId } = req.params;
         const { dfuCode, userName } = req.body;
         
-        console.log(`[UNDO] Undoing transfer for DFU ${dfuCode} by ${userName}`);
+        console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the current session
-        const session = await db.collection('sessions').findOne({ _id: sessionId });
-        
-        if (!session) {
-            return res.status(404).json({ error: 'Session not found' });
-        }
-        
-        // Remove the DFU from completedTransfers
+        // Get current session
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
         const completedTransfers = session.completedTransfers || {};
         delete completedTransfers[dfuCode];
         
-        // Update the session with the modified completedTransfers
+        // Update session
         await db.collection('sessions').updateOne(
-            { _id: sessionId },
+            { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
                     completedTransfers: completedTransfers,
@@ -509,129 +378,72 @@ app.post('/api/session/:sessionId/undoTransfer', checkDbConnection, async (req, 
             }
         );
         
-        // Remove transfer logs for this DFU
-        await db.collection('transfers').deleteMany({
-            sessionId,
-            dfuCode
-        });
-        
-        console.log(`[UNDO] Transfer undone for DFU ${dfuCode}`);
         res.json({ success: true });
         
-        // Notify all users that a transfer was undone
-        io.to(sessionId).emit('transferUndone', { 
+        // Notify all users
+        io.emit('transferUndone', { 
             dfuCode,
             undoneBy: userName
         });
         
     } catch (error) {
-        console.error('[UNDO] Error undoing transfer:', error);
+        console.error('[UNDO] Error:', error);
         res.status(500).json({ error: 'Failed to undo transfer' });
     }
 });
 
-// Export current data
-app.post('/api/session/:sessionId/export', checkDbConnection, async (req, res) => {
+// Export data
+app.post('/api/export', checkDbConnection, async (req, res) => {
     try {
-        const { sessionId } = req.params;
         const { rawData } = req.body;
         
-        console.log(`[EXPORT] Exporting data for session: ${sessionId}`);
-        
-        // Use the provided rawData (already has transfers applied)
-        const dataToExport = rawData || [];
-        
-        // Create Excel file
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(dataToExport);
+        const ws = XLSX.utils.json_to_sheet(rawData || []);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
         
-        // Generate buffer
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
         
-        console.log(`[EXPORT] Generated file with ${dataToExport.length} records`);
-        
-        // Send file
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=DFU_Transfers_${Date.now()}.xlsx`);
         res.send(buffer);
         
     } catch (error) {
-        console.error('[EXPORT] Error exporting file:', error);
-        res.status(500).json({ error: 'Failed to export file' });
+        console.error('[EXPORT] Error:', error);
+        res.status(500).json({ error: 'Failed to export' });
     }
 });
 
-// Clear session data
-app.post('/api/session/:sessionId/clear', checkDbConnection, async (req, res) => {
+// Clear all data (reset the session)
+app.post('/api/clear', checkDbConnection, async (req, res) => {
     try {
-        const { sessionId } = req.params;
+        const { userName } = req.body;
         
-        // Clear all transfers for this session
-        await db.collection('transfers').deleteMany({ sessionId });
+        console.log(`[CLEAR] ${userName} clearing all data`);
         
-        // Clear raw data and cycle data from session
         await db.collection('sessions').updateOne(
-            { _id: sessionId },
+            { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
                     rawData: null,
                     dataUploaded: false,
                     variantCycleData: null,
                     hasVariantCycleData: false,
-                    completedTransfers: {}
+                    completedTransfers: {},
+                    clearedAt: new Date(),
+                    clearedBy: userName
                 }
             }
         );
         
-        console.log(`[CLEAR] Cleared all data for session: ${sessionId}`);
         res.json({ success: true });
         
-        // Notify all connected users
-        io.to(sessionId).emit('dataCleared');
+        // Notify all users
+        io.emit('dataCleared', { clearedBy: userName });
         
     } catch (error) {
-        console.error('[CLEAR] Error clearing session:', error);
-        res.status(500).json({ error: 'Failed to clear session' });
+        console.error('[CLEAR] Error:', error);
+        res.status(500).json({ error: 'Failed to clear data' });
     }
-});
-
-// End session and clear all data
-app.post('/api/session/:sessionId/end', checkDbConnection, async (req, res) => {
-    try {
-        const { sessionId } = req.params;
-        const { userName } = req.body;
-        
-        console.log(`[END] Ending session ${sessionId} by ${userName}`);
-        
-        // Delete all transfers for this session
-        await db.collection('transfers').deleteMany({ sessionId });
-        
-        // Delete the session
-        await db.collection('sessions').deleteOne({ _id: sessionId });
-        
-        console.log(`[END] Session ${sessionId} ended and all data cleared`);
-        
-        // Notify all connected users that session has ended
-        io.to(sessionId).emit('sessionEnded', { endedBy: userName });
-        
-        res.json({ success: true, message: 'Session ended and data cleared' });
-        
-    } catch (error) {
-        console.error('[END] Error ending session:', error);
-        res.status(500).json({ error: 'Failed to end session: ' + error.message });
-    }
-});
-
-// Catch-all for unmatched API routes (for debugging)
-app.get('/api/*', (req, res) => {
-    console.log(`[404] Unmatched API route: ${req.originalUrl}`);
-    res.status(404).json({ error: `Route not found: ${req.originalUrl}` });
-});
-
-app.post('/api/*', (req, res) => {
-    console.log(`[404] Unmatched API POST route: ${req.originalUrl}`);
-    res.status(404).json({ error: `Route not found: ${req.originalUrl}` });
 });
 
 // ============= WEBSOCKET HANDLING =============
@@ -639,38 +451,22 @@ app.post('/api/*', (req, res) => {
 io.on('connection', (socket) => {
     console.log('[WS] New client connected');
     
-    socket.on('joinSession', ({ sessionId, userName }) => {
-        socket.join(sessionId);
-        socket.sessionId = sessionId;
+    socket.on('joinSession', ({ userName }) => {
         socket.userName = userName;
+        activeUsers.add(userName);
         
-        // Track active users
-        if (!activeSessions.has(sessionId)) {
-            activeSessions.set(sessionId, new Set());
-        }
-        activeSessions.get(sessionId).add(userName);
+        console.log(`[WS] ${userName} joined`);
         
-        console.log(`[WS] ${userName} joined session via WebSocket`);
-        
-        // Notify others
-        socket.to(sessionId).emit('userJoined', { userName });
-        
-        // Send active users list
-        io.to(sessionId).emit('activeUsers', Array.from(activeSessions.get(sessionId)));
+        // Notify all users
+        io.emit('userJoined', { userName });
+        io.emit('activeUsers', Array.from(activeUsers));
     });
     
     socket.on('disconnect', () => {
-        if (socket.sessionId && socket.userName) {
-            const sessionUsers = activeSessions.get(socket.sessionId);
-            if (sessionUsers) {
-                sessionUsers.delete(socket.userName);
-                if (sessionUsers.size === 0) {
-                    activeSessions.delete(socket.sessionId);
-                } else {
-                    io.to(socket.sessionId).emit('activeUsers', Array.from(sessionUsers));
-                }
-                console.log(`[WS] ${socket.userName} disconnected from ${socket.sessionId}`);
-            }
+        if (socket.userName) {
+            activeUsers.delete(socket.userName);
+            console.log(`[WS] ${socket.userName} disconnected`);
+            io.emit('activeUsers', Array.from(activeUsers));
         }
     });
 });
@@ -692,8 +488,8 @@ function processMultiVariantDFUs(data) {
             };
         }
         
-        const partNumber = record['Product Number'] || record['Part Number'] || record['Part Code'];
-        const partDescription = record['PartDescription'] || record['Part Description'] || '';
+        const partNumber = record['Product Number'] || record['Part Number'];
+        const partDescription = record['PartDescription'] || '';
         
         grouped[dfuCode].records.push(record);
         if (partNumber) {
@@ -706,16 +502,15 @@ function processMultiVariantDFUs(data) {
     Object.keys(grouped).forEach(dfuCode => {
         const variants = Array.from(grouped[dfuCode].variants);
         if (variants.length > 1) {
-            // Calculate total demand for each variant
             const variantDemand = {};
             variants.forEach(variant => {
                 const variantRecords = grouped[dfuCode].records.filter(r => {
-                    const partNumber = r['Product Number'] || r['Part Number'] || r['Part Code'];
+                    const partNumber = r['Product Number'] || r['Part Number'];
                     return partNumber === variant;
                 });
                 
                 const totalDemand = variantRecords.reduce((sum, r) => {
-                    const demand = parseFloat(r['weekly fcst'] || r['Demand'] || r['Forecast'] || 0);
+                    const demand = parseFloat(r['weekly fcst'] || 0);
                     return sum + demand;
                 }, 0);
                 
@@ -743,9 +538,7 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`
     [SERVER] Server is running!
-    [SERVER] Local: http://localhost:${PORT}
-    [SERVER] Network: http://[your-computer-ip]:${PORT}
-    
-    Waiting for MongoDB connection...
+    [SERVER] Port: ${PORT}
+    [SERVER] Team Session ID: ${TEAM_SESSION_ID}
     `);
 });
