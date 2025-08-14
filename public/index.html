@@ -125,6 +125,7 @@
         let userName = null;
         let socket = null;
         let notificationCount = 0;
+        let originalRawDataBackup = null; // Store original data for undo
         
         async function handleJoinSession() {
             console.log('handleJoinSession called');
@@ -260,6 +261,32 @@
             }
         }
         
+        // Helper function to preserve scroll position
+        function preserveScrollPosition(callback) {
+            // Get all scrollable containers
+            const dfuListContainer = document.querySelector('.space-y-2.h-full.overflow-y-auto');
+            const scrollPositions = [];
+            
+            if (dfuListContainer) {
+                scrollPositions.push({
+                    element: dfuListContainer,
+                    top: dfuListContainer.scrollTop
+                });
+            }
+            
+            // Execute the callback
+            callback();
+            
+            // Restore scroll positions after a short delay
+            setTimeout(() => {
+                scrollPositions.forEach(({ element, top }) => {
+                    if (element && document.body.contains(element)) {
+                        element.scrollTop = top;
+                    }
+                });
+            }, 50);
+        }
+        
         function setupMultiUserFeatures() {
             if (!appInstance) return;
             
@@ -312,6 +339,15 @@
                 loadSessionData();
             });
             
+            socket.on('transferUndone', ({ dfuCode, undoneBy }) => {
+                console.log('Transfer undone by:', undoneBy);
+                if (undoneBy !== userName) {
+                    showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
+                }
+                // Reload data to get the restored state
+                loadSessionData();
+            });
+            
             socket.on('sessionEnded', ({ endedBy }) => {
                 alert(`Session ended by ${endedBy}. All data has been cleared.`);
                 window.location.reload();
@@ -349,6 +385,108 @@
                     this.isLoading = false;
                     this.render();
                 }
+            };
+            
+            // Override loadVariantCycleData for multi-user sync
+            const originalLoadVariantCycleData = appInstance.loadVariantCycleData.bind(appInstance);
+            appInstance.loadVariantCycleData = async function(file) {
+                console.log('Multi-user loadVariantCycleData');
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('userName', userName);
+                
+                try {
+                    const response = await fetch(`/api/upload-cycle/${sessionId}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification(`Successfully uploaded ${result.recordCount} variant cycle records for ${result.dfuCount} DFUs`, 'success');
+                        // The cycle data will be loaded when we reload session data
+                        await loadSessionData();
+                    } else {
+                        showNotification('Failed to upload cycle data: ' + result.error, 'error');
+                    }
+                } catch (error) {
+                    console.error('Error uploading cycle data:', error);
+                    showNotification('Upload failed: ' + error.message, 'error');
+                }
+            };
+            
+            // Override undoTransfer to sync with server
+            const originalUndoTransfer = appInstance.undoTransfer.bind(appInstance);
+            appInstance.undoTransfer = async function(dfuCode) {
+                console.log('Multi-user undoTransfer for DFU:', dfuCode);
+                
+                try {
+                    // First, tell the server to undo the transfer
+                    const response = await fetch(`/api/session/${sessionId}/undoTransfer`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            dfuCode,
+                            userName
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Restore from the server's original data
+                        if (originalRawDataBackup) {
+                            this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
+                        }
+                        
+                        // Clear local transfer states
+                        delete this.completedTransfers[dfuCode];
+                        delete this.transfers[dfuCode];
+                        delete this.bulkTransfers[dfuCode];
+                        delete this.granularTransfers[dfuCode];
+                        delete this.lastExecutionSummary[dfuCode];
+                        
+                        // Re-process the data
+                        this.multiVariantDFUs = {};
+                        this.filteredDFUs = {};
+                        this.processMultiVariantDFUs(this.rawData);
+                        
+                        showNotification(`Transfer undone for DFU ${dfuCode}`, 'success');
+                        
+                        // Preserve scroll position when rendering
+                        preserveScrollPosition(() => {
+                            this.render();
+                        });
+                        
+                        // Save the restored state to server
+                        await fetch(`/api/session/${sessionId}/updateData`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                rawData: this.rawData,
+                                completedTransfers: this.completedTransfers || {},
+                                transfer: {
+                                    dfuCode,
+                                    type: 'undo',
+                                    completedBy: userName
+                                }
+                            })
+                        });
+                    }
+                } catch (error) {
+                    console.error('Error undoing transfer:', error);
+                    showNotification('Failed to undo transfer', 'error');
+                }
+            };
+            
+            // Override selectDFU to preserve scroll position
+            const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
+            appInstance.selectDFU = function(dfuCode) {
+                preserveScrollPosition(() => {
+                    originalSelectDFU(dfuCode);
+                });
             };
             
             // Override executeTransfer - let it work normally on client side
@@ -395,36 +533,6 @@
                           showNotification('Transfer completed locally but failed to save to server', 'warning');
                       });
                 }, 500);
-            };
-            
-            // Override loadVariantCycleData for multi-user sync
-            const originalLoadVariantCycleData = appInstance.loadVariantCycleData.bind(appInstance);
-            appInstance.loadVariantCycleData = async function(file) {
-                console.log('Multi-user loadVariantCycleData');
-                
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('userName', userName);
-                
-                try {
-                    const response = await fetch(`/api/upload-cycle/${sessionId}`, {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (result.success) {
-                        showNotification(`Successfully uploaded ${result.recordCount} variant cycle records for ${result.dfuCount} DFUs`, 'success');
-                        // The cycle data will be loaded when we reload session data
-                        await loadSessionData();
-                    } else {
-                        showNotification('Failed to upload cycle data: ' + result.error, 'error');
-                    }
-                } catch (error) {
-                    console.error('Error uploading cycle data:', error);
-                    showNotification('Upload failed: ' + error.message, 'error');
-                }
             };
             
             // Override exportData method - just download the current rawData
@@ -492,6 +600,9 @@
                     appInstance.rawData = data.rawData;
                     appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
                     
+                    // Keep a backup of the original data for undo functionality
+                    originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
+                    
                     // Restore completed transfers status
                     if (data.completedTransfers) {
                         appInstance.completedTransfers = data.completedTransfers;
@@ -504,9 +615,12 @@
                         console.log('Loaded variant cycle data for', Object.keys(data.variantCycleData).length, 'DFUs');
                     }
                     
-                    appInstance.processMultiVariantDFUs(data.rawData);
-                    appInstance.isProcessed = true;
-                    appInstance.render();
+                    // Preserve scroll position when processing data
+                    preserveScrollPosition(() => {
+                        appInstance.processMultiVariantDFUs(data.rawData);
+                        appInstance.isProcessed = true;
+                        appInstance.render();
+                    });
                 } else if (data.variantCycleData && Object.keys(data.variantCycleData).length > 0) {
                     // Even if no main data, load cycle data if it exists
                     appInstance.variantCycleDates = data.variantCycleData;

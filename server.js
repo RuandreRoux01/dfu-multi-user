@@ -449,6 +449,60 @@ app.post('/api/session/:sessionId/updateData', async (req, res) => {
         res.status(500).json({ error: 'Failed to update data' });
     }
 });
+// Add this new endpoint to your server.js in the REST API ENDPOINTS section
+// (add it after the /api/session/:sessionId/updateData endpoint)
+
+// Undo transfer - restore original data for a DFU
+app.post('/api/session/:sessionId/undoTransfer', async (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const { dfuCode, userName } = req.body;
+        
+        console.log(`⏪ Undoing transfer for DFU ${dfuCode} by ${userName}`);
+        
+        // Get the current session
+        const session = await db.collection('sessions').findOne({ _id: sessionId });
+        
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+        
+        // Remove the DFU from completedTransfers
+        const completedTransfers = session.completedTransfers || {};
+        delete completedTransfers[dfuCode];
+        
+        // Update the session with the modified completedTransfers
+        await db.collection('sessions').updateOne(
+            { _id: sessionId },
+            { 
+                $set: { 
+                    completedTransfers: completedTransfers,
+                    lastModified: new Date(),
+                    lastModifiedBy: userName
+                }
+            }
+        );
+        
+        // Remove transfer logs for this DFU
+        await db.collection('transfers').deleteMany({
+            sessionId,
+            dfuCode
+        });
+        
+        console.log(`✅ Transfer undone for DFU ${dfuCode}`);
+        res.json({ success: true });
+        
+        // Notify all users that a transfer was undone
+        io.to(sessionId).emit('transferUndone', { 
+            dfuCode,
+            undoneBy: userName
+        });
+        
+    } catch (error) {
+        console.error('Error undoing transfer:', error);
+        res.status(500).json({ error: 'Failed to undo transfer' });
+    }
+});
 
 // Export current data
 app.post('/api/session/:sessionId/export', async (req, res) => {
