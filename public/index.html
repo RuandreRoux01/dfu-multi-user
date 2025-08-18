@@ -42,6 +42,11 @@
             overflow-y: auto;
         }
         
+        /* Add styles for filters */
+        #plantLocationFilter, #productionLineFilter {
+            min-width: 180px;
+        }
+        
         @media (max-width: 1024px) {
             #mainContent {
                 padding-right: 20px;
@@ -53,6 +58,14 @@
                 top: auto;
                 width: 100%;
                 margin-bottom: 20px;
+            }
+            
+            .filter-container {
+                flex-wrap: wrap;
+            }
+            
+            #plantLocationFilter, #productionLineFilter {
+                min-width: 150px;
             }
         }
     </style>
@@ -216,9 +229,16 @@
                 }
             });
             
-            socket.on('dataUploaded', ({ uploadedBy }) => {
+            socket.on('dataUploaded', ({ uploadedBy, cycleDataReset }) => {
                 if (uploadedBy !== userName) {
                     showNotification(`${uploadedBy} uploaded new data`, 'info');
+                    
+                    // Reset cycle data state when new demand data is uploaded
+                    if (cycleDataReset && appInstance) {
+                        appInstance.variantCycleDates = {};
+                        appInstance.hasVariantCycleData = false;
+                    }
+                    
                     loadTeamData();
                 }
             });
@@ -240,7 +260,7 @@
             socket.on('transferUndone', ({ dfuCode, undoneBy, remainingTransfers }) => {
                 if (undoneBy !== userName) {
                     showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
-        
+                    
                     // Update the local state to reflect the undo
                     if (appInstance && appInstance.completedTransfers) {
                         delete appInstance.completedTransfers[dfuCode];
@@ -258,91 +278,6 @@
                     }
                 }
             });
-
-            // Enhanced loadTeamData function
-            async function loadTeamData() {
-                if (!appInstance) return;
-                
-                try {
-                    const response = await fetch('/api/session/data');
-                    const data = await response.json();
-                    
-                    if (data.rawData && data.rawData.length > 0) {
-                        appInstance.rawData = data.rawData;
-                        appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
-                        originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
-                        
-                        // Properly sync completed transfers from DB
-                        if (data.completedTransfers) {
-                            appInstance.completedTransfers = data.completedTransfers;
-                            
-                            // Mark DFUs as completed in the UI
-                            Object.keys(data.completedTransfers).forEach(dfuCode => {
-                                if (!appInstance.transfers) appInstance.transfers = {};
-                                appInstance.transfers[dfuCode] = true;
-                            });
-                        }
-                        
-                        if (data.variantCycleData) {
-                            appInstance.variantCycleDates = data.variantCycleData;
-                            appInstance.hasVariantCycleData = true;
-                        }
-                        
-                        preserveScrollPosition(() => {
-                            appInstance.processMultiVariantDFUs(data.rawData);
-                            appInstance.isProcessed = true;
-                            appInstance.render();
-                        });
-                    }
-                } catch (error) {
-                    console.error('Error loading data:', error);
-                }
-            }
-
-            // Enhanced undo function
-            appInstance.undoTransfer = async function(dfuCode) {
-                try {
-                    const response = await fetch('/api/undoTransfer', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ dfuCode, userName })
-                    });
-                    
-                    if (response.ok) {
-                        const result = await response.json();
-                        
-                        // Restore original data
-                        if (originalRawDataBackup) {
-                            this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
-                        }
-                        
-                        // Clear local transfer state
-                        delete this.completedTransfers[dfuCode];
-                        delete this.transfers[dfuCode];
-                        delete this.bulkTransfers[dfuCode];
-                        delete this.granularTransfers[dfuCode];
-                        
-                        // Update with remaining transfers from server
-                        if (result.remainingTransfers) {
-                            this.completedTransfers = result.remainingTransfers;
-                        }
-                        
-                        this.processMultiVariantDFUs(this.rawData);
-                        
-                        showNotification('Transfer undone successfully', 'success');
-                        
-                        preserveScrollPosition(() => {
-                            this.render();
-                        });
-                        
-                        // Reload to ensure full sync
-                        setTimeout(() => loadTeamData(), 500);
-                    }
-                } catch (error) {
-                    showNotification('Failed to undo transfer', 'error');
-                    console.error('Undo error:', error);
-                }
-            };
             
             socket.on('dataCleared', ({ clearedBy }) => {
                 showNotification(`${clearedBy} cleared all data`, 'warning');
@@ -367,6 +302,10 @@
                     const result = await response.json();
                     
                     if (result.success) {
+                        // Reset cycle data locally when new demand data is uploaded
+                        this.variantCycleDates = {};
+                        this.hasVariantCycleData = false;
+                        
                         showNotification(`Uploaded ${result.rowCount} records`, 'success');
                         await loadTeamData();
                     } else {
@@ -427,45 +366,45 @@
             
             appInstance.undoTransfer = async function(dfuCode) {
                 try {
-                    await fetch('/api/undoTransfer', {
+                    const response = await fetch('/api/undoTransfer', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ dfuCode, userName })
                     });
                     
-                    if (originalRawDataBackup) {
-                        this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
+                    if (response.ok) {
+                        const result = await response.json();
+                        
+                        // Restore original data
+                        if (originalRawDataBackup) {
+                            this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
+                        }
+                        
+                        // Clear local transfer state
+                        delete this.completedTransfers[dfuCode];
+                        delete this.transfers[dfuCode];
+                        delete this.bulkTransfers[dfuCode];
+                        delete this.granularTransfers[dfuCode];
+                        
+                        // Update with remaining transfers from server
+                        if (result.remainingTransfers) {
+                            this.completedTransfers = result.remainingTransfers;
+                        }
+                        
+                        this.processMultiVariantDFUs(this.rawData);
+                        
+                        showNotification('Transfer undone successfully', 'success');
+                        
+                        preserveScrollPosition(() => {
+                            this.render();
+                        });
+                        
+                        // Reload to ensure full sync
+                        setTimeout(() => loadTeamData(), 500);
                     }
-                    
-                    delete this.completedTransfers[dfuCode];
-                    delete this.transfers[dfuCode];
-                    delete this.bulkTransfers[dfuCode];
-                    delete this.granularTransfers[dfuCode];
-                    
-                    this.processMultiVariantDFUs(this.rawData);
-                    
-                    showNotification('Transfer undone', 'success');
-                    
-                    preserveScrollPosition(() => {
-                        this.render();
-                    });
-                    
-                    // Update server with restored data
-                    await fetch('/api/updateData', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            rawData: this.rawData,
-                            completedTransfers: this.completedTransfers || {},
-                            transfer: {
-                                dfuCode,
-                                type: 'undo',
-                                completedBy: userName
-                            }
-                        })
-                    });
                 } catch (error) {
-                    showNotification('Undo failed', 'error');
+                    showNotification('Failed to undo transfer', 'error');
+                    console.error('Undo error:', error);
                 }
             };
             
@@ -524,13 +463,25 @@
                     appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
                     originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
                     
+                    // Properly sync completed transfers from DB
                     if (data.completedTransfers) {
                         appInstance.completedTransfers = data.completedTransfers;
+                        
+                        // Mark DFUs as completed in the UI
+                        Object.keys(data.completedTransfers).forEach(dfuCode => {
+                            if (!appInstance.transfers) appInstance.transfers = {};
+                            appInstance.transfers[dfuCode] = true;
+                        });
                     }
                     
-                    if (data.variantCycleData) {
+                    // Properly handle cycle data state
+                    if (data.hasVariantCycleData && data.variantCycleData) {
                         appInstance.variantCycleDates = data.variantCycleData;
                         appInstance.hasVariantCycleData = true;
+                    } else {
+                        // Reset cycle data if not present
+                        appInstance.variantCycleDates = {};
+                        appInstance.hasVariantCycleData = false;
                     }
                     
                     preserveScrollPosition(() => {
@@ -538,6 +489,13 @@
                         appInstance.isProcessed = true;
                         appInstance.render();
                     });
+                } else {
+                    // No data loaded - ensure cycle data is reset
+                    if (appInstance) {
+                        appInstance.variantCycleDates = {};
+                        appInstance.hasVariantCycleData = false;
+                        appInstance.render();
+                    }
                 }
             } catch (error) {
                 console.error('Error loading data:', error);
