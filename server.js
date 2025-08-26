@@ -87,6 +87,12 @@ async function getCompletedTransfers() {
 
 // Save individual transfer to DB
 async function saveTransfer(dfuCode, transferData, userName) {
+    // Check if we already have original data stored
+    const existingTransfer = await db.collection('transfers').findOne({
+        sessionId: TEAM_SESSION_ID,
+        dfuCode
+    });
+    
     const transferDoc = {
         sessionId: TEAM_SESSION_ID,
         dfuCode,
@@ -95,11 +101,9 @@ async function saveTransfer(dfuCode, transferData, userName) {
         completedAt: new Date()
     };
     
-    // IMPORTANT: Store original data snapshot for this DFU before transfer
-    const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-    if (session && session.rawData) {
-        const dfuOriginalRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
-        transferDoc.originalData = dfuOriginalRecords; // Store original state
+    // IMPORTANT: Preserve original data if it exists, don't overwrite it
+    if (existingTransfer && existingTransfer.originalData) {
+        transferDoc.originalData = existingTransfer.originalData;
     }
     
     // Add any transfer-specific data
@@ -258,11 +262,30 @@ app.get('/api/session/data', async (req, res) => {
 
 app.post('/api/updateData', async (req, res) => {
     try {
-        const { rawData, completedTransfers, transfer } = req.body;
+        const { rawData, completedTransfers, transfer, originalData } = req.body;
         
         console.log(`[UPDATE] Processing transfer for DFU ${transfer?.dfuCode}`);
         
-        // Update raw data
+        // CRITICAL: Save original data FIRST before updating with modified data
+        if (transfer?.dfuCode && originalData) {
+            // Store the original data for this DFU before it was modified
+            const transferDoc = await db.collection('transfers').findOne({
+                sessionId: TEAM_SESSION_ID,
+                dfuCode: transfer.dfuCode
+            });
+            
+            // Only save original data if we haven't saved it before
+            if (!transferDoc) {
+                await db.collection('transfers').insertOne({
+                    sessionId: TEAM_SESSION_ID,
+                    dfuCode: transfer.dfuCode,
+                    originalData: originalData, // This is the UNMODIFIED data
+                    savedAt: new Date()
+                });
+            }
+        }
+        
+        // Update raw data with the modified version
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { $set: { rawData, lastModified: new Date() }}
