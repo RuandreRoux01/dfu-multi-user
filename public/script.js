@@ -701,7 +701,7 @@ class DemandTransferApp {
         }
     }
     
-        // Replace the entire addManualVariant method (around line 1500)
+        // Replace the entire addManualVariant method in script.js
     addManualVariant(dfuCode) {
         const variantCode = prompt('Enter the new variant code:');
         if (!variantCode || !variantCode.trim()) return;
@@ -715,97 +715,109 @@ class DemandTransferApp {
         }
         
         // Check if variant already exists
-        if (dfuData.variants.includes(variantCode.trim())) {
+        const trimmedVariant = variantCode.trim();
+        if (dfuData.variants.some(v => this.toComparableString(v) === this.toComparableString(trimmedVariant))) {
             this.showNotification('Variant already exists', 'error');
             return;
         }
         
-        // Find a sample record for this DFU to use as template
-        const sampleRecord = this.rawData.find(r => 
-            this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr
-        );
+        console.log(`Adding variant ${trimmedVariant} to DFU ${dfuStr}`);
         
-        if (!sampleRecord) {
-            this.showNotification('Cannot find sample record for DFU', 'error');
-            return;
-        }
-        
-        // Get all unique week/location combinations for this DFU
+        // Get all records for this DFU
         const dfuRecords = this.rawData.filter(r => 
-            this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr
+            this.toComparableString(r['DFU']) === dfuStr
         );
         
-        const weekLocationCombos = new Set();
-        dfuRecords.forEach(r => {
-            const key = `${r['Week Number']}_${r['Source Location']}_${r['Calendar.week']}`;
-            weekLocationCombos.add(key);
-        });
+        console.log(`Found ${dfuRecords.length} records for DFU ${dfuStr}`);
         
-        // Create new records for the new variant with 0 demand
+        // Create new records for the new variant
         const newRecords = [];
-        weekLocationCombos.forEach(combo => {
-            const [weekNum, sourceLoc, calendarWeek] = combo.split('_');
-            const templateRecord = dfuRecords.find(r => 
-                r['Week Number'] == weekNum && 
-                r['Source Location'] == sourceLoc
-            );
+        const processedCombos = new Set();
+        
+        dfuRecords.forEach(record => {
+            const weekNum = record['Week Number'];
+            const sourceLoc = record['Source Location'];
+            const calWeek = record['Calendar.week'];
+            const comboKey = `${weekNum}_${sourceLoc}`;
             
-            if (templateRecord) {
-                const newRecord = { ...templateRecord };
-                newRecord['Product Number'] = variantCode.trim();
+            if (!processedCombos.has(comboKey)) {
+                processedCombos.add(comboKey);
+                
+                const newRecord = { ...record };
+                newRecord['Product Number'] = trimmedVariant;
                 newRecord['weekly fcst'] = 0;
                 newRecord['PartDescription'] = 'Manually added variant';
                 newRecord['Transfer History'] = `Manually added on ${new Date().toLocaleString()}`;
+                
                 newRecords.push(newRecord);
             }
         });
         
-        if (newRecords.length === 0) {
-            // Fallback: create at least one record
-            const newRecord = { ...sampleRecord };
-            newRecord['Product Number'] = variantCode.trim();
+        // If no records were created, create at least one
+        if (newRecords.length === 0 && dfuRecords.length > 0) {
+            const templateRecord = dfuRecords[0];
+            const newRecord = { ...templateRecord };
+            newRecord['Product Number'] = trimmedVariant;
             newRecord['weekly fcst'] = 0;
             newRecord['PartDescription'] = 'Manually added variant';
             newRecord['Transfer History'] = `Manually added on ${new Date().toLocaleString()}`;
             newRecords.push(newRecord);
         }
         
+        console.log(`Created ${newRecords.length} new records for variant ${trimmedVariant}`);
+        
         // Add records locally first for immediate UI update
-        this.rawData.push(...newRecords);
-        
-        // Save to database (for multi-user mode)
-        if (window.userName) { // Check if in multi-user mode
-            fetch('/api/addVariant', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    dfuCode: dfuStr,
-                    variantCode: variantCode.trim(),
-                    newRecords: newRecords,
-                    userName: window.userName
+        if (newRecords.length > 0) {
+            this.rawData.push(...newRecords);
+            
+            // Save to database (for multi-user mode)
+            if (window.userName) { // Check if in multi-user mode
+                fetch('/api/addVariant', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        dfuCode: dfuStr,
+                        variantCode: trimmedVariant,
+                        newRecords: newRecords,
+                        userName: window.userName
+                    })
+                }).then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        this.showNotification(`Variant ${trimmedVariant} added successfully (${data.recordsAdded} records)`, 'success');
+                    } else {
+                        this.showNotification('Failed to save variant to database: ' + (data.error || 'Unknown error'), 'error');
+                        // Remove locally added records on failure
+                        this.rawData = this.rawData.filter(r => 
+                            !(this.toComparableString(r['DFU']) === dfuStr && 
+                                this.toComparableString(r['Product Number']) === this.toComparableString(trimmedVariant))
+                        );
+                    }
                 })
-            }).then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    this.showNotification(`Variant ${variantCode} added successfully`, 'success');
-                } else {
-                    this.showNotification('Failed to save variant to database', 'error');
-                }
-            })
-            .catch(error => {
-                console.error('Error saving variant:', error);
-                this.showNotification('Error saving variant to database', 'error');
-            });
+                .catch(error => {
+                    console.error('Error saving variant:', error);
+                    this.showNotification('Error saving variant to database', 'error');
+                    // Remove locally added records on failure
+                    this.rawData = this.rawData.filter(r => 
+                        !(this.toComparableString(r['DFU']) === dfuStr && 
+                            this.toComparableString(r['Product Number']) === this.toComparableString(trimmedVariant))
+                    );
+                });
+            } else {
+                this.showNotification(`Variant ${trimmedVariant} added locally`, 'success');
+            }
+            
+            // Re-process data to show the new variant
+            this.processMultiVariantDFUs(this.rawData);
+            this.render();
+            
+            // Re-select the DFU to show the updated details
+            setTimeout(() => {
+                this.selectDFU(dfuCode);
+            }, 100);
+        } else {
+            this.showNotification('Could not create records for new variant', 'error');
         }
-        
-        // Re-process data to show the new variant
-        this.processMultiVariantDFUs(this.rawData);
-        this.render();
-        
-        // Re-select the DFU to show the updated details
-        setTimeout(() => {
-            this.selectDFU(dfuCode);
-        }, 100);
     }
     
     executeTransfer(dfuCode) {

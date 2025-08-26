@@ -61,17 +61,6 @@ async function initializeDatabase() {
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
-// Helper function to calculate date from week number
-function getDateFromWeekNumber(year, weekNumber) {
-    const jan1 = new Date(year, 0, 1);
-    const jan1DayOfWeek = jan1.getDay();
-    const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
-    const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
-    const targetDate = new Date(firstMonday);
-    targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
-    return targetDate;
-}
-
 // Helper to get completed transfers from DB
 async function getCompletedTransfers() {
     const transfers = await db.collection('transfers').find({ 
@@ -101,12 +90,6 @@ async function saveTransfer(dfuCode, transferData, userName) {
     }
     if (transferData.granularTransfers) {
         transferDoc.granularTransfers = transferData.granularTransfers;
-    }
-    if (transferData.transfers) {
-        transferDoc.transfers = transferData.transfers;
-    }
-    if (transferData.targetVariant) {
-        transferDoc.targetVariant = transferData.targetVariant;
     }
     
     await db.collection('transfers').replaceOne(
@@ -166,7 +149,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             { 
                 $set: { 
                     rawData: data,
-                    originalUploadData: data, // STORE PRISTINE COPY
                     dataUploaded: true,
                     uploadedAt: new Date(),
                     uploadedBy: req.body.userName
@@ -256,22 +238,6 @@ app.post('/api/updateData', async (req, res) => {
         
         console.log(`[UPDATE] Processing transfer for DFU ${transfer?.dfuCode}`);
         
-        // Store the modified records for this DFU
-        if (transfer?.dfuCode) {
-            const modifiedDFURecords = rawData.filter(r => r['DFU'] === transfer.dfuCode);
-            
-            await db.collection('transfers').updateOne(
-                { sessionId: TEAM_SESSION_ID, dfuCode: transfer.dfuCode },
-                { 
-                    $set: { 
-                        modifiedRecords: modifiedDFURecords,
-                        modifiedAt: new Date()
-                    }
-                },
-                { upsert: true }
-            );
-        }
-        
         // Update raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
@@ -297,63 +263,123 @@ app.post('/api/updateData', async (req, res) => {
     }
 });
 
+app.post('/api/addVariant', async (req, res) => {
+    try {
+        const { dfuCode, variantCode, newRecords, userName } = req.body;
+        
+        console.log(`[ADD VARIANT] Adding variant ${variantCode} to DFU ${dfuCode}`);
+        console.log(`[ADD VARIANT] Received ${newRecords ? newRecords.length : 0} new records`);
+        
+        // Validate input
+        if (!dfuCode || !variantCode) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        // Ensure newRecords is an array
+        const recordsToAdd = Array.isArray(newRecords) ? newRecords : [];
+        
+        // Get current session data
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        
+        if (!session || !session.rawData) {
+            return res.status(400).json({ error: 'No session data found' });
+        }
+        
+        // If no new records provided, create them based on existing DFU records
+        if (recordsToAdd.length === 0) {
+            const dfuRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
+            
+            if (dfuRecords.length > 0) {
+                // Get unique week/location combinations
+                const uniqueCombos = new Map();
+                dfuRecords.forEach(r => {
+                    const key = `${r['Week Number']}_${r['Source Location']}`;
+                    if (!uniqueCombos.has(key)) {
+                        uniqueCombos.set(key, r);
+                    }
+                });
+                
+                // Create new records for each unique combination
+                uniqueCombos.forEach((templateRecord) => {
+                    const newRecord = { ...templateRecord };
+                    newRecord['Product Number'] = variantCode.trim();
+                    newRecord['weekly fcst'] = 0;
+                    newRecord['PartDescription'] = 'Manually added variant';
+                    newRecord['Transfer History'] = `Manually added by ${userName} on ${new Date().toLocaleString()}`;
+                    recordsToAdd.push(newRecord);
+                });
+            } else {
+                // Create at least one record if no DFU records found
+                const sampleRecord = session.rawData[0];
+                if (sampleRecord) {
+                    const newRecord = { ...sampleRecord };
+                    newRecord['DFU'] = dfuCode;
+                    newRecord['Product Number'] = variantCode.trim();
+                    newRecord['weekly fcst'] = 0;
+                    newRecord['PartDescription'] = 'Manually added variant';
+                    newRecord['Transfer History'] = `Manually added by ${userName} on ${new Date().toLocaleString()}`;
+                    recordsToAdd.push(newRecord);
+                }
+            }
+        }
+        
+        // Add new records to rawData
+        const updatedRawData = [...session.rawData, ...recordsToAdd];
+        
+        // Update session with new raw data
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
+            { 
+                $set: { 
+                    rawData: updatedRawData,
+                    lastModified: new Date()
+                }
+            }
+        );
+        
+        console.log(`[ADD VARIANT] Successfully added ${recordsToAdd.length} records`);
+        
+        res.json({ 
+            success: true, 
+            message: `Variant ${variantCode} added to DFU ${dfuCode}`,
+            recordsAdded: recordsToAdd.length
+        });
+        
+        // Notify all users
+        io.emit('variantAdded', { 
+            dfuCode, 
+            variantCode, 
+            addedBy: userName 
+        });
+        
+    } catch (error) {
+        console.error('[ADD VARIANT] Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/undoTransfer', async (req, res) => {
     try {
         const { dfuCode, userName } = req.body;
         
         console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the session with original upload data
+        // Get the original raw data before any transfers
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        if (!session || !session.originalUploadData) {
-            // Fallback: try to reconstruct from current data
-            return res.status(400).json({ error: 'Original data not found. Please re-upload the file.' });
-        }
         
-        // Get original records for this DFU from the pristine upload
-        const originalDFURecords = session.originalUploadData.filter(r => r['DFU'] === dfuCode);
-        
-        if (originalDFURecords.length === 0) {
-            return res.status(400).json({ error: 'No original records found for this DFU' });
-        }
-        
-        // Get current data and remove modified DFU records
-        let restoredData = session.rawData.filter(r => r['DFU'] !== dfuCode);
-        
-        // Add back original records
-        restoredData = [...restoredData, ...originalDFURecords];
-        
-        // Update session with restored data
-        await db.collection('sessions').updateOne(
-            { _id: TEAM_SESSION_ID },
-            { 
-                $set: { 
-                    rawData: restoredData,
-                    lastModified: new Date()
-                }
-            }
-        );
-        
-        // Delete the transfer record
+        // Delete from transfers collection
         await deleteTransfer(dfuCode);
         
-        // Get remaining transfers
+        // Get all remaining transfers
         const remainingTransfers = await getCompletedTransfers();
         
-        console.log(`[UNDO] Restored ${originalDFURecords.length} original records for DFU ${dfuCode}`);
+        res.json({ success: true, remainingTransfers });
         
-        res.json({ 
-            success: true, 
-            remainingTransfers,
-            restoredData 
-        });
-        
-        // Notify all users
+        // Notify all users with updated transfer list
         io.emit('transferUndone', { 
             dfuCode, 
             undoneBy: userName,
-            remainingTransfers,
-            requiresReload: true 
+            remainingTransfers 
         });
         
     } catch (error) {
@@ -388,90 +414,11 @@ app.post('/api/clear', async (req, res) => {
     }
 });
 
-// Replace the /api/addVariant endpoint with the provided version
-app.post('/api/addVariant', async (req, res) => {
-    try {
-        const { dfuCode, variantCode, newRecords, userName } = req.body;
-        
-        console.log(`[ADD VARIANT] Adding variant ${variantCode} to DFU ${dfuCode}`);
-        
-        // Get current session data
-        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        
-        if (!session || !session.rawData) {
-            return res.status(400).json({ error: 'No session data found' });
-        }
-        
-        // Add new records to rawData
-        const updatedRawData = [...session.rawData, ...newRecords];
-        
-        // Update session with new raw data
-        await db.collection('sessions').updateOne(
-            { _id: TEAM_SESSION_ID },
-            { 
-                $set: { 
-                    rawData: updatedRawData,
-                    lastModified: new Date()
-                }
-            }
-        );
-        
-        res.json({ success: true, message: `Variant ${variantCode} added to DFU ${dfuCode}` });
-        
-        // Notify all users
-        io.emit('variantAdded', { 
-            dfuCode, 
-            variantCode, 
-            addedBy: userName 
-        });
-        
-    } catch (error) {
-        console.error('[ADD VARIANT] Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
 app.post('/api/export', async (req, res) => {
     try {
         const { rawData } = req.body;
-        
-        // Process the data to ensure proper date formatting
-        const processedData = (rawData || []).map(record => {
-            const processed = { ...record };
-            
-            // Fix Calendar.week based on Week Number
-            if (processed['Week Number']) {
-                const weekNum = parseInt(processed['Week Number']);
-                
-                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
-                    // Determine the year - check if Calendar.week has a valid year
-                    let year = 2025; // Default year
-                    
-                    if (processed['Calendar.week']) {
-                        const existingDate = new Date(processed['Calendar.week']);
-                        if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
-                            year = existingDate.getFullYear();
-                        }
-                    }
-                    
-                    // Extract year from WeekCountYear if it exists (format: W1_2026)
-                    if (processed['WeekCountYear']) {
-                        const weekYearMatch = String(processed['WeekCountYear']).match(/_(\d{4})/);
-                        if (weekYearMatch) {
-                            year = parseInt(weekYearMatch[1]);
-                        }
-                    }
-                    
-                    const date = getDateFromWeekNumber(year, weekNum);
-                    processed['Calendar.week'] = date.toISOString().split('T')[0];
-                }
-            }
-            
-            return processed;
-        });
-        
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(processedData);
+        const ws = XLSX.utils.json_to_sheet(rawData || []);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
         
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
@@ -504,7 +451,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// Helper function
+// Helper function - Updated to show ALL DFUs
 function processMultiVariantDFUs(data) {
     const grouped = {};
     
@@ -533,7 +480,7 @@ function processMultiVariantDFUs(data) {
     const allDFUs = {};
     Object.keys(grouped).forEach(dfuCode => {
         const variants = Array.from(grouped[dfuCode].variants);
-        // Include ALL DFUs, even single variant
+        // Include ALL DFUs, not just multi-variant ones
         const variantDemand = {};
         variants.forEach(variant => {
             const variantRecords = grouped[dfuCode].records.filter(r => 
