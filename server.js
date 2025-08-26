@@ -63,6 +63,17 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
 // Helper function to calculate date from week number
 function getDateFromWeekNumber(year, weekNumber) {
+    // For week 53, calculate the last week of the year
+    if (weekNumber === 53) {
+        // Start from December 28th of the given year (always in week 52 or 53)
+        const lastWeek = new Date(year, 11, 28);
+        // Move to Monday of that week
+        const dayOfWeek = lastWeek.getDay();
+        const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+        lastWeek.setDate(lastWeek.getDate() + daysToMonday);
+        return lastWeek;
+    }
+    
     const jan1 = new Date(year, 0, 1);
     const jan1DayOfWeek = jan1.getDay();
     const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
@@ -400,7 +411,7 @@ app.post('/api/export', async (req, res) => {
             if (processed['Week Number']) {
                 const weekNum = parseInt(processed['Week Number']);
                 
-                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
+                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 53) {
                     // Determine the year - check if Calendar.week has a valid year
                     let year = 2025; // Default year
                     
@@ -408,6 +419,14 @@ app.post('/api/export', async (req, res) => {
                         const existingDate = new Date(processed['Calendar.week']);
                         if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
                             year = existingDate.getFullYear();
+                        }
+                    }
+                    
+                    // Extract year from WeekCountYear if it exists (format: W53_2025)
+                    if (processed['WeekCountYear']) {
+                        const weekYearMatch = String(processed['WeekCountYear']).match(/_(\d{4})/);
+                        if (weekYearMatch) {
+                            year = parseInt(weekYearMatch[1]);
                         }
                     }
                     
