@@ -1,6 +1,6 @@
 // DFU Demand Transfer Management Application
-// Version: 2.19.0 - Build: 2025-08-06-production-line
-// Added Production Line filter support
+// Version: 2.20.0 - Build: 2025-12-17-all-dfus
+// Added support for all DFUs and manual variant addition
 
 class DemandTransferApp {
     constructor() {
@@ -11,9 +11,9 @@ class DemandTransferApp {
         this.selectedDFU = null;
         this.searchTerm = '';
         this.selectedPlantLocation = '';
-        this.selectedProductionLine = ''; // NEW: Production Line filter
+        this.selectedProductionLine = '';
         this.availablePlantLocations = [];
-        this.availableProductionLines = []; // NEW: Available Production Lines
+        this.availableProductionLines = [];
         this.transfers = {}; // Format: { dfuCode: { sourceVariant: targetVariant } }
         this.bulkTransfers = {}; // Format: { dfuCode: targetVariant }
         this.granularTransfers = {}; // Format: { dfuCode: { sourceVariant: { targetVariant: { weekKey: { selected: boolean, customQuantity: number } } } } }
@@ -30,8 +30,8 @@ class DemandTransferApp {
     }
     
     init() {
-        console.log('🚀 DFU Demand Transfer App v2.19.0 - Build: 2025-08-06-production-line');
-        console.log('📋 Added Production Line filter support');
+        console.log('🚀 DFU Demand Transfer App v2.20.0 - Build: 2025-12-17-all-dfus');
+        console.log('📋 Added support for all DFUs and manual variant addition');
         this.render();
         this.attachEventListeners();
     }
@@ -40,6 +40,17 @@ class DemandTransferApp {
     toComparableString(value) {
         if (value === null || value === undefined) return '';
         return String(value).trim();
+    }
+    
+    // Helper function to get date from week number
+    getDateFromWeekNumber(year, weekNumber) {
+        const jan1 = new Date(year, 0, 1);
+        const jan1DayOfWeek = jan1.getDay();
+        const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
+        const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
+        const targetDate = new Date(firstMonday);
+        targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
+        return targetDate;
     }
     
     showNotification(message, type = 'success') {
@@ -51,75 +62,6 @@ class DemandTransferApp {
         setTimeout(() => {
             notification.remove();
         }, 3000);
-    }
-    // Add this helper function after the constructor (around line 50)
-// Inside the DemandTransferApp class:
-
-    // Helper function to get date from week number
-    getDateFromWeekNumber(year, weekNumber) {
-        // Create date object for January 1st of the given year
-        const jan1 = new Date(year, 0, 1);
-        
-        // Get the day of week for January 1st (0 = Sunday, 1 = Monday, etc.)
-        const jan1DayOfWeek = jan1.getDay();
-        
-        // Calculate days to add to get to the first Monday of the year
-        const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
-        
-        // Get the first Monday of the year
-        const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
-        
-        // Calculate the date for the given week number
-        const targetDate = new Date(firstMonday);
-        targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
-        
-        return targetDate;
-    }
-
-    // Replace the exportData function (around line 1520) with this:
-    async exportData() {
-        try {
-            // Create a copy of the data with properly formatted dates
-            const formattedData = this.rawData.map(record => {
-                const formattedRecord = { ...record };
-                
-                // Fix Calendar.week date based on Week Number
-                if (formattedRecord['Week Number']) {
-                    const weekNum = parseInt(formattedRecord['Week Number']);
-                    
-                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
-                        // Determine the year - check if Calendar.week has a valid year
-                        let year = 2025; // Default year
-                        
-                        if (formattedRecord['Calendar.week']) {
-                            const existingDate = new Date(formattedRecord['Calendar.week']);
-                            if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
-                                year = existingDate.getFullYear();
-                            }
-                        }
-                        
-                        const date = this.getDateFromWeekNumber(year, weekNum);
-                        
-                        // Format as YYYY-MM-DD
-                        const yearStr = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        formattedRecord['Calendar.week'] = `${yearStr}-${month}-${day}`;
-                    }
-                }
-                
-                return formattedRecord;
-            });
-            
-            const wb = XLSX.utils.book_new();
-            const ws = XLSX.utils.json_to_sheet(formattedData);
-            XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
-            XLSX.writeFile(wb, 'Updated_Demand_Data.xlsx');
-            this.showNotification('Data exported successfully');
-        } catch (error) {
-            console.error('Error exporting data:', error);
-            this.showNotification('Error exporting data: ' + error.message, 'error');
-        }
     }
     
     formatNumber(num) {
@@ -351,8 +293,8 @@ class DemandTransferApp {
         const partNumberColumn = 'Product Number';
         const demandColumn = 'weekly fcst';
         const partDescriptionColumn = 'PartDescription';
-        const plantLocationColumn = 'Production Plant'; // UPDATED from 'Plant Location'
-        const productionLineColumn = 'Production Line'; // NEW
+        const plantLocationColumn = 'Production Plant';
+        const productionLineColumn = 'Production Line';
         const calendarWeekColumn = 'Calendar.week';
         const sourceLocationColumn = 'Source Location';
         const weekNumberColumn = 'Week Number';
@@ -363,7 +305,7 @@ class DemandTransferApp {
             demandColumn, 
             partDescriptionColumn, 
             plantLocationColumn,
-            productionLineColumn, // NEW
+            productionLineColumn,
             calendarWeekColumn,
             sourceLocationColumn,
             weekNumberColumn
@@ -424,8 +366,8 @@ class DemandTransferApp {
 
         console.log('Grouped by DFU:', Object.keys(groupedByDFU).length, 'unique DFUs');
 
-        const multiVariants = {};
-        let multiVariantCount = 0;
+        const allDFUs = {};
+        let totalDFUCount = 0;
         
         Object.keys(groupedByDFU).forEach(dfuCode => {
             const records = groupedByDFU[dfuCode];
@@ -440,96 +382,86 @@ class DemandTransferApp {
             // Check if this DFU has completed transfers
             const isCompleted = this.completedTransfers[dfuCode];
             
-            if (uniquePartCodes.length > 1 || isCompleted) {
-                multiVariantCount++;
-                const variantDemand = {};
+            // Include ALL DFUs now, not just multi-variant
+            totalDFUCount++;
+            const variantDemand = {};
+            
+            uniquePartCodes.forEach(partCode => {
+                // Filter records for this part code, ensuring string comparison
+                const partCodeRecords = records.filter(r => this.toComparableString(r[partNumberColumn]) === partCode);
                 
-                uniquePartCodes.forEach(partCode => {
-                    // Filter records for this part code, ensuring string comparison
-                    const partCodeRecords = records.filter(r => this.toComparableString(r[partNumberColumn]) === partCode);
+                // Sum up all demand for this variant across all records
+                const totalDemand = partCodeRecords.reduce((sum, r) => {
+                    const demand = parseFloat(r[demandColumn]) || 0;
+                    return sum + demand;
+                }, 0);
+                
+                // Get part description from the first record
+                const partDescription = partCodeRecords[0] ? partCodeRecords[0][partDescriptionColumn] : '';
+                
+                // Group records by week for granular control
+                const weeklyRecords = {};
+                partCodeRecords.forEach(record => {
+                    const weekNum = this.toComparableString(record[weekNumberColumn]);
+                    const demand = parseFloat(record[demandColumn]) || 0;
+                    const sourceLocation = this.toComparableString(record[sourceLocationColumn]);
                     
-                    // Sum up all demand for this variant across all records
-                    const totalDemand = partCodeRecords.reduce((sum, r) => {
-                        const demand = parseFloat(r[demandColumn]) || 0;
-                        return sum + demand;
-                    }, 0);
-                    
-                    // Get part description from the first record
-                    const partDescription = partCodeRecords[0] ? partCodeRecords[0][partDescriptionColumn] : '';
-                    
-                    // Include all variants that have records (including those with 0 demand)
-                    if (partCodeRecords.length > 0) {
-                        // Group records by week for granular control
-                        const weeklyRecords = {};
-                        partCodeRecords.forEach(record => {
-                            const weekNum = this.toComparableString(record[weekNumberColumn]);
-                            const demand = parseFloat(record[demandColumn]) || 0;
-                            const sourceLocation = this.toComparableString(record[sourceLocationColumn]);
-                            
-                            const weekKey = `${weekNum}-${sourceLocation}`;
-                            if (!weeklyRecords[weekKey]) {
-                                weeklyRecords[weekKey] = {
-                                    weekNumber: weekNum,
-                                    sourceLocation: sourceLocation,
-                                    demand: 0,
-                                    records: []
-                                };
-                            }
-                            weeklyRecords[weekKey].demand += demand;
-                            weeklyRecords[weekKey].records.push(record);
-                        });
-                        
-                        variantDemand[partCode] = {
-                            totalDemand,
-                            recordCount: partCodeRecords.length,
-                            records: partCodeRecords,
-                            partDescription: partDescription || 'Description not available',
-                            weeklyRecords: weeklyRecords
+                    const weekKey = `${weekNum}-${sourceLocation}`;
+                    if (!weeklyRecords[weekKey]) {
+                        weeklyRecords[weekKey] = {
+                            weekNumber: weekNum,
+                            sourceLocation: sourceLocation,
+                            demand: 0,
+                            records: []
                         };
                     }
+                    weeklyRecords[weekKey].demand += demand;
+                    weeklyRecords[weekKey].records.push(record);
                 });
                 
-                // Always include DFUs that have completed transfers, even if they now have only one variant
-                const activeVariants = Object.keys(variantDemand);
-                
-                // For completed transfers or multi-variant DFUs, include all variants (even with 0 demand)
-                if (activeVariants.length > 1 || isCompleted || (isCompleted && this.keepZeroVariants)) {
-                    multiVariants[dfuCode] = {
-                        variants: activeVariants,
-                        variantDemand,
-                        totalRecords: records.length,
-                        dfuColumn,
-                        partNumberColumn,
-                        demandColumn,
-                        partDescriptionColumn,
-                        plantLocationColumn,
-                        productionLineColumn, // NEW
-                        calendarWeekColumn,
-                        sourceLocationColumn,
-                        weekNumberColumn,
-                        isCompleted: !!isCompleted,
-                        completionInfo: isCompleted || null,
-                        plantLocations: uniquePlants, // Store all unique plants
-                        productionLines: uniqueProductionLines, // Store all unique production lines
-                        plantLocation: records[0] ? this.toComparableString(records[0][plantLocationColumn]) : null,
-                        productionLine: records[0] ? this.toComparableString(records[0][productionLineColumn]) : null
-                    };
-                    
-                    console.log(`DFU ${dfuCode} - Plants: ${uniquePlants.join(', ')}, Lines: ${uniqueProductionLines.join(', ')}`);
-                }
-            }
+                variantDemand[partCode] = {
+                    totalDemand,
+                    recordCount: partCodeRecords.length,
+                    records: partCodeRecords,
+                    partDescription: partDescription || 'Description not available',
+                    weeklyRecords: weeklyRecords
+                };
+            });
+            
+            const activeVariants = Object.keys(variantDemand);
+            
+            // Include ALL DFUs
+            allDFUs[dfuCode] = {
+                variants: activeVariants,
+                variantDemand,
+                totalRecords: records.length,
+                dfuColumn,
+                partNumberColumn,
+                demandColumn,
+                partDescriptionColumn,
+                plantLocationColumn,
+                productionLineColumn,
+                calendarWeekColumn,
+                sourceLocationColumn,
+                weekNumberColumn,
+                isCompleted: !!isCompleted,
+                completionInfo: isCompleted || null,
+                plantLocations: uniquePlants,
+                productionLines: uniqueProductionLines,
+                plantLocation: records[0] ? this.toComparableString(records[0][plantLocationColumn]) : null,
+                productionLine: records[0] ? this.toComparableString(records[0][productionLineColumn]) : null,
+                isSingleVariant: activeVariants.length === 1
+            };
+            
+            console.log(`DFU ${dfuCode} - Variants: ${activeVariants.length}, Plants: ${uniquePlants.join(', ')}, Lines: ${uniqueProductionLines.join(', ')}`);
         });
 
-        console.log('Multi-variant DFUs found:', multiVariantCount);
+        console.log('Total DFUs found:', totalDFUCount);
 
-        this.multiVariantDFUs = multiVariants;
-        this.filteredDFUs = multiVariants;
+        this.multiVariantDFUs = allDFUs;
+        this.filteredDFUs = allDFUs;
         
-        if (multiVariantCount === 0) {
-            this.showNotification('No DFU codes with multiple variants found in the data', 'error');
-        } else {
-            this.showNotification(`Found ${multiVariantCount} DFUs with multiple variants`);
-        }
+        this.showNotification(`Found ${totalDFUCount} DFUs (${Object.keys(allDFUs).filter(dfu => !allDFUs[dfu].isSingleVariant).length} with multiple variants)`);
     }
     
     filterDFUs() {
@@ -767,6 +699,61 @@ class DemandTransferApp {
                 actionButtonsContainer.innerHTML = '';
             }
         }
+    }
+    
+    addManualVariant(dfuCode) {
+        const variantCode = prompt('Enter the new variant code:');
+        if (!variantCode || !variantCode.trim()) return;
+        
+        const dfuStr = this.toComparableString(dfuCode);
+        const dfuData = this.multiVariantDFUs[dfuStr];
+        
+        if (!dfuData) {
+            this.showNotification('DFU not found', 'error');
+            return;
+        }
+        
+        // Check if variant already exists
+        if (dfuData.variants.includes(variantCode.trim())) {
+            this.showNotification('Variant already exists', 'error');
+            return;
+        }
+        
+        // Get all unique week/location combinations for this DFU
+        const dfuRecords = this.rawData.filter(r => this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr);
+        const weekLocationCombos = new Set();
+        dfuRecords.forEach(r => {
+            const key = `${r[dfuData.weekNumberColumn || 'Week Number']}_${r[dfuData.sourceLocationColumn || 'Source Location']}`;
+            weekLocationCombos.add(key);
+        });
+        
+        // Create new records for the new variant
+        const newRecords = [];
+        weekLocationCombos.forEach(combo => {
+            const [weekNum, sourceLoc] = combo.split('_');
+            const templateRecord = dfuRecords.find(r => 
+                r[dfuData.weekNumberColumn || 'Week Number'] == weekNum && 
+                r[dfuData.sourceLocationColumn || 'Source Location'] == sourceLoc
+            );
+            
+            if (templateRecord) {
+                const newRecord = { ...templateRecord };
+                newRecord[dfuData.partNumberColumn || 'Product Number'] = variantCode.trim();
+                newRecord[dfuData.demandColumn || 'weekly fcst'] = 0;
+                newRecord[dfuData.partDescriptionColumn || 'PartDescription'] = 'Manually Added Variant';
+                newRecord['Manual Variant'] = true;
+                newRecords.push(newRecord);
+            }
+        });
+        
+        // Add new records to rawData
+        this.rawData = [...this.rawData, ...newRecords];
+        
+        // Re-process data
+        this.processMultiVariantDFUs(this.rawData);
+        
+        this.showNotification(`Added variant ${variantCode} to DFU ${dfuCode}`, 'success');
+        this.render();
     }
     
     executeTransfer(dfuCode) {
@@ -1321,30 +1308,46 @@ class DemandTransferApp {
         // Re-process the data to show the variants again with original quantities
         this.processMultiVariantDFUs(this.rawData);
         
-        this.showNotification(`Transfer undone for DFU ${dfuStr}. Original data restored with all variants and quantities.`, 'success');
+        this.showNotification(`Transfer undone for DFU ${dfuStr}. All original variants and quantities restored.`, 'success');
         this.render();
     }
     
-    exportData() {
+    async exportData() {
         try {
-            // Create a copy of the data with formatted dates
+            // Create a copy of the data with properly formatted dates
             const formattedData = this.rawData.map(record => {
                 const formattedRecord = { ...record };
                 
-                // Format Calendar.week if it exists
-                if (formattedRecord['Calendar.week']) {
-                    // Convert the date string to just YYYY-MM-DD format
-                    const dateValue = formattedRecord['Calendar.week'];
-                    if (dateValue) {
-                        // Handle both Date objects and ISO strings
-                        const date = new Date(dateValue);
-                        if (!isNaN(date.getTime())) {
-                            // Format as YYYY-MM-DD
-                            const year = date.getFullYear();
-                            const month = String(date.getMonth() + 1).padStart(2, '0');
-                            const day = String(date.getDate()).padStart(2, '0');
-                            formattedRecord['Calendar.week'] = `${year}-${month}-${day}`;
+                // Fix Calendar.week date based on Week Number
+                if (formattedRecord['Week Number']) {
+                    const weekNum = parseInt(formattedRecord['Week Number']);
+                    
+                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
+                        // Determine the year - check if Calendar.week has a valid year
+                        let year = 2025; // Default year
+                        
+                        if (formattedRecord['Calendar.week']) {
+                            const existingDate = new Date(formattedRecord['Calendar.week']);
+                            if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
+                                year = existingDate.getFullYear();
+                            }
                         }
+                        
+                        // Extract year from WeekCountYear if it exists (format: W1_2026)
+                        if (formattedRecord['WeekCountYear']) {
+                            const weekYearMatch = String(formattedRecord['WeekCountYear']).match(/_(\d{4})/);
+                            if (weekYearMatch) {
+                                year = parseInt(weekYearMatch[1]);
+                            }
+                        }
+                        
+                        const date = this.getDateFromWeekNumber(year, weekNum);
+                        
+                        // Format as YYYY-MM-DD
+                        const yearStr = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        formattedRecord['Calendar.week'] = `${yearStr}-${month}-${day}`;
                     }
                 }
                 
@@ -1440,6 +1443,9 @@ class DemandTransferApp {
             return;
         }
         
+        const totalDFUs = Object.keys(this.filteredDFUs).length;
+        const multiVariantCount = Object.keys(this.filteredDFUs).filter(dfu => !this.filteredDFUs[dfu].isSingleVariant).length;
+        
         app.innerHTML = `
             <div class="max-w-6xl mx-auto p-6 bg-white min-h-screen">
                 <div class="mb-6">
@@ -1447,12 +1453,12 @@ class DemandTransferApp {
                         <div>
                             <h1 class="text-3xl font-bold text-gray-800 mb-2">DFU Demand Transfer Management</h1>
                             <p class="text-gray-600">
-                                Manage demand transfers for DFU codes with multiple variants. Found ${Object.keys(this.multiVariantDFUs).length} DFUs with multiple variants.
+                                Managing ${totalDFUs} DFUs (${multiVariantCount} with multiple variants, ${totalDFUs - multiVariantCount} single variant)
                             </p>
                         </div>
                         <div class="text-right text-xs text-gray-400">
-                            <p>Version 2.19.0</p>
-                            <p>Build: 2025-08-06-production-line</p>
+                            <p>Version 2.20.0</p>
+                            <p>Build: 2025-12-17-all-dfus</p>
                         </div>
                     </div>
                 </div>
@@ -1517,10 +1523,10 @@ class DemandTransferApp {
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 grid-responsive">
                     <div class="bg-gray-50 rounded-lg p-6">
                         <h3 class="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                            <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                             </svg>
-                            DFUs Requiring Review (${Object.keys(this.filteredDFUs).length})
+                            All DFUs (${totalDFUs})
                         </h3>
                         <div class="relative" style="height: 580px;">
                             <div class="absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-gray-50 to-transparent pointer-events-none z-10"></div>
@@ -1539,6 +1545,7 @@ class DemandTransferApp {
                                                     ${dfuData.plantLocations && dfuData.plantLocations.length > 0 ? `Plant${dfuData.plantLocations.length > 1 ? 's' : ''}: ${dfuData.plantLocations.join(', ')} • ` : ''}
                                                     ${dfuData.productionLines && dfuData.productionLines.length > 0 ? `Line${dfuData.productionLines.length > 1 ? 's' : ''}: ${dfuData.productionLines.join(', ')} • ` : ''}
                                                     ${dfuData.variants.length} variant${dfuData.variants.length > 1 ? 's' : ''}
+                                                    ${dfuData.isSingleVariant ? ' (single)' : ''}
                                                     ${dfuData.isCompleted ? ' (transfer completed)' : ''}
                                                 </p>
                                             </div>
@@ -1557,6 +1564,8 @@ class DemandTransferApp {
                                                         </svg>
                                                         Ready
                                                     </span>
+                                                ` : dfuData.isSingleVariant ? `
+                                                    <span class="text-blue-600 text-sm">Single</span>
                                                 ` : `
                                                     <span class="text-amber-600 text-sm">Pending</span>
                                                 `}
@@ -1572,26 +1581,36 @@ class DemandTransferApp {
                     <div class="bg-white border border-gray-200 rounded-lg p-6">
                         ${this.selectedDFU && this.multiVariantDFUs[this.selectedDFU] ? `
                             <div>
-                                <h3 class="font-semibold text-gray-800 mb-4">
-                                    DFU: ${this.selectedDFU}
-                                    ${this.multiVariantDFUs[this.selectedDFU].plantLocations && this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 0 ? 
-                                        ` (Plant${this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].plantLocations.join(', ')})` : ''}
-                                    ${this.multiVariantDFUs[this.selectedDFU].productionLines && this.multiVariantDFUs[this.selectedDFU].productionLines.length > 0 ? 
-                                        ` (Line${this.multiVariantDFUs[this.selectedDFU].productionLines.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].productionLines.join(', ')})` : ''}
-                                    - Variant Details
-                                    ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
-                                        <span class="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-                                            ✔ Transfer Complete
-                                        </span>
+                                <div class="flex justify-between items-center mb-4">
+                                    <h3 class="font-semibold text-gray-800">
+                                        DFU: ${this.selectedDFU}
+                                        ${this.multiVariantDFUs[this.selectedDFU].plantLocations && this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 0 ? 
+                                            ` (Plant${this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].plantLocations.join(', ')})` : ''}
+                                        ${this.multiVariantDFUs[this.selectedDFU].productionLines && this.multiVariantDFUs[this.selectedDFU].productionLines.length > 0 ? 
+                                            ` (Line${this.multiVariantDFUs[this.selectedDFU].productionLines.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].productionLines.join(', ')})` : ''}
+                                        - Variant Details
+                                        ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
+                                            <span class="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
+                                                ✓ Transfer Complete
+                                            </span>
+                                        ` : ''}
+                                    </h3>
+                                    ${!this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
+                                        <button class="btn btn-primary text-sm" id="addVariantBtn">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                                            </svg>
+                                            Add Variant
+                                        </button>
                                     ` : ''}
-                                </h3>
+                                </div>
                                 
                                 ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
                                     <!-- Completed Transfer Summary -->
                                     <div class="mb-6 p-4 bg-green-50 rounded-lg border border-green-200">
                                         <div class="flex justify-between items-start">
                                             <div class="flex-1">
-                                                <h4 class="font-semibold text-green-800 mb-3">✔ Transfer Completed</h4>
+                                                <h4 class="font-semibold text-green-800 mb-3">✓ Transfer Completed</h4>
                                                 <div class="text-sm text-green-700">
                                                     <p><strong>Type:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'bulk' ? 'Bulk Transfer' : this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'granular' ? 'Granular Transfer' : 'Individual Transfers'}</p>
                                                     <p><strong>Date:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.timestamp}</p>
@@ -1666,7 +1685,7 @@ class DemandTransferApp {
                                         ` : ''}
                                     </div>
                                     
-                                    <!-- Individual Transfer Section continues... -->
+                                    <!-- Individual Transfer Section -->
                                     ${this.renderIndividualTransferSection()}
                                     
                                     <!-- Action Buttons Container -->
@@ -1686,7 +1705,9 @@ class DemandTransferApp {
                 <div class="mt-6 bg-blue-50 rounded-lg p-4">
                     <h3 class="font-semibold text-blue-800 mb-2">How to Use</h3>
                     <ul class="text-sm text-blue-700 space-y-1">
-                        <li><strong>Filter by Plant/Line:</strong> Use the dropdowns to filter DFUs by Production Plant or Production Line</li>
+                        <li><strong>View All DFUs:</strong> All DFUs are now shown, including single-variant ones</li>
+                        <li><strong>Add Variant:</strong> Click "Add Variant" to manually add a new variant to any DFU</li>
+                        <li><strong>Filter:</strong> Use dropdowns to filter by Production Plant or Production Line</li>
                         <li><strong>Bulk Transfer:</strong> Click a purple button to transfer all variants to that target</li>
                         <li><strong>Individual Transfer:</strong> Use dropdowns to specify where each variant should go</li>
                         <li><strong>Granular Transfer:</strong> Select specific weeks to transfer partial demand</li>
@@ -1810,7 +1831,6 @@ class DemandTransferApp {
     }
     
     ensureGranularContainers() {
-        // Implementation remains the same as before
         if (this.selectedDFU && this.multiVariantDFUs[this.selectedDFU]) {
             console.log('=== FORCE CREATING GRANULAR CONTAINERS ===');
             
@@ -1833,7 +1853,7 @@ class DemandTransferApp {
                             
                             parentDiv.appendChild(granularContainer);
                             
-                            console.log(`✔ Created granular-${variant}`);
+                            console.log(`✓ Created granular-${variant}`);
                         }
                     }
                 }
@@ -1882,6 +1902,11 @@ class DemandTransferApp {
         const undoTransferBtn = document.getElementById('undoTransferBtn');
         if (undoTransferBtn) {
             undoTransferBtn.addEventListener('click', () => this.undoTransfer(this.selectedDFU));
+        }
+        
+        const addVariantBtn = document.getElementById('addVariantBtn');
+        if (addVariantBtn) {
+            addVariantBtn.addEventListener('click', () => this.addManualVariant(this.selectedDFU));
         }
         
         const cycleFileInput = document.getElementById('cycleFileInput');

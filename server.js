@@ -63,17 +63,6 @@ const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
 // Helper function to calculate date from week number
 function getDateFromWeekNumber(year, weekNumber) {
-    // For week 53, calculate the last week of the year
-    if (weekNumber === 53) {
-        // Start from December 28th of the given year (always in week 52 or 53)
-        const lastWeek = new Date(year, 11, 28);
-        // Move to Monday of that week
-        const dayOfWeek = lastWeek.getDay();
-        const daysToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-        lastWeek.setDate(lastWeek.getDate() + daysToMonday);
-        return lastWeek;
-    }
-    
     const jan1 = new Date(year, 0, 1);
     const jan1DayOfWeek = jan1.getDay();
     const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
@@ -399,6 +388,90 @@ app.post('/api/clear', async (req, res) => {
     }
 });
 
+app.post('/api/addVariant', async (req, res) => {
+    try {
+        const { dfuCode, variantCode, userName } = req.body;
+        
+        console.log(`[ADD VARIANT] ${userName} adding variant ${variantCode} to DFU ${dfuCode}`);
+        
+        // Get current session data
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        if (!session || !session.rawData) {
+            return res.status(400).json({ error: 'No data loaded' });
+        }
+        
+        // Find a sample record for this DFU to use as template
+        const sampleRecord = session.rawData.find(r => r['DFU'] === dfuCode);
+        if (!sampleRecord) {
+            return res.status(400).json({ error: 'DFU not found' });
+        }
+        
+        // Check if variant already exists
+        const existingVariant = session.rawData.find(r => 
+            r['DFU'] === dfuCode && 
+            (r['Product Number'] === variantCode || r['Part Number'] === variantCode)
+        );
+        
+        if (existingVariant) {
+            return res.status(400).json({ error: 'Variant already exists' });
+        }
+        
+        // Get all unique week/location combinations for this DFU
+        const dfuRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
+        const weekLocationCombos = new Set();
+        dfuRecords.forEach(r => {
+            const key = `${r['Week Number']}_${r['Source Location']}`;
+            weekLocationCombos.add(key);
+        });
+        
+        // Create new records for the new variant (one for each week/location)
+        const newRecords = [];
+        weekLocationCombos.forEach(combo => {
+            const [weekNum, sourceLoc] = combo.split('_');
+            const templateRecord = dfuRecords.find(r => 
+                r['Week Number'] == weekNum && 
+                r['Source Location'] == sourceLoc
+            );
+            
+            if (templateRecord) {
+                const newRecord = { ...templateRecord };
+                newRecord['Product Number'] = variantCode;
+                newRecord['weekly fcst'] = 0; // Start with 0 demand
+                newRecord['PartDescription'] = 'Manually Added Variant';
+                newRecord['Manual Variant'] = true;
+                newRecords.push(newRecord);
+            }
+        });
+        
+        // Add new records to rawData
+        const updatedRawData = [...session.rawData, ...newRecords];
+        
+        // Update session
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
+            { 
+                $set: { 
+                    rawData: updatedRawData,
+                    lastModified: new Date()
+                }
+            }
+        );
+        
+        res.json({ success: true, recordsAdded: newRecords.length });
+        
+        // Notify all users
+        io.emit('variantAdded', { 
+            dfuCode, 
+            variantCode,
+            addedBy: userName 
+        });
+        
+    } catch (error) {
+        console.error('[ADD VARIANT] Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/api/export', async (req, res) => {
     try {
         const { rawData } = req.body;
@@ -411,7 +484,7 @@ app.post('/api/export', async (req, res) => {
             if (processed['Week Number']) {
                 const weekNum = parseInt(processed['Week Number']);
                 
-                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 53) {
+                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
                     // Determine the year - check if Calendar.week has a valid year
                     let year = 2025; // Default year
                     
@@ -422,7 +495,7 @@ app.post('/api/export', async (req, res) => {
                         }
                     }
                     
-                    // Extract year from WeekCountYear if it exists (format: W53_2025)
+                    // Extract year from WeekCountYear if it exists (format: W1_2026)
                     if (processed['WeekCountYear']) {
                         const weekYearMatch = String(processed['WeekCountYear']).match(/_(\d{4})/);
                         if (weekYearMatch) {
@@ -498,36 +571,36 @@ function processMultiVariantDFUs(data) {
         }
     });
     
-    const multiVariants = {};
+    const allDFUs = {};
     Object.keys(grouped).forEach(dfuCode => {
         const variants = Array.from(grouped[dfuCode].variants);
-        if (variants.length > 1) {
-            const variantDemand = {};
-            variants.forEach(variant => {
-                const variantRecords = grouped[dfuCode].records.filter(r => 
-                    (r['Product Number'] || r['Part Number']) === variant
-                );
-                
-                const totalDemand = variantRecords.reduce((sum, r) => 
-                    sum + parseFloat(r['weekly fcst'] || 0), 0
-                );
-                
-                variantDemand[variant] = {
-                    totalDemand,
-                    recordCount: variantRecords.length,
-                    description: grouped[dfuCode].partDescriptions[variant] || ''
-                };
-            });
+        // Include ALL DFUs, even single variant
+        const variantDemand = {};
+        variants.forEach(variant => {
+            const variantRecords = grouped[dfuCode].records.filter(r => 
+                (r['Product Number'] || r['Part Number']) === variant
+            );
             
-            multiVariants[dfuCode] = {
-                variants,
-                recordCount: grouped[dfuCode].records.length,
-                variantDemand
+            const totalDemand = variantRecords.reduce((sum, r) => 
+                sum + parseFloat(r['weekly fcst'] || 0), 0
+            );
+            
+            variantDemand[variant] = {
+                totalDemand,
+                recordCount: variantRecords.length,
+                description: grouped[dfuCode].partDescriptions[variant] || ''
             };
-        }
+        });
+        
+        allDFUs[dfuCode] = {
+            variants,
+            recordCount: grouped[dfuCode].records.length,
+            variantDemand,
+            isSingleVariant: variants.length === 1
+        };
     });
     
-    return multiVariants;
+    return allDFUs;
 }
 
 const PORT = process.env.PORT || 3000;

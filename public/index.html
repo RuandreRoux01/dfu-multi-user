@@ -281,6 +281,13 @@
                 }
             });
             
+            socket.on('variantAdded', ({ dfuCode, variantCode, addedBy }) => {
+                if (addedBy !== userName) {
+                    showNotification(`${addedBy} added variant ${variantCode} to DFU ${dfuCode}`, 'info');
+                    loadTeamData();
+                }
+            });
+            
             socket.on('dataCleared', ({ clearedBy }) => {
                 showNotification(`${clearedBy} cleared all data`, 'warning');
                 window.location.reload();
@@ -473,6 +480,34 @@
                     }
                 } catch (error) {
                     showNotification('Export failed', 'error');
+                }
+            };
+            
+            appInstance.addManualVariant = async function(dfuCode) {
+                const variantCode = prompt('Enter the new variant code:');
+                if (!variantCode || !variantCode.trim()) return;
+                
+                try {
+                    const response = await fetch('/api/addVariant', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            dfuCode, 
+                            variantCode: variantCode.trim(),
+                            userName 
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification(`Added variant ${variantCode} to DFU ${dfuCode}`, 'success');
+                        await loadTeamData();
+                    } else {
+                        showNotification(result.error || 'Failed to add variant', 'error');
+                    }
+                } catch (error) {
+                    showNotification('Error adding variant', 'error');
                 }
             };
             
