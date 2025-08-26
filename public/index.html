@@ -345,9 +345,6 @@
             
             const originalExecuteTransfer = appInstance.executeTransfer.bind(appInstance);
             appInstance.executeTransfer = function(dfuCode) {
-                // CRITICAL: Capture original DFU data BEFORE the transfer modifies it
-                const originalDFUData = this.rawData.filter(r => r['DFU'] === dfuCode);
-                
                 originalExecuteTransfer(dfuCode);
                 
                 setTimeout(() => {
@@ -357,7 +354,6 @@
                         body: JSON.stringify({
                             rawData: this.rawData,
                             completedTransfers: this.completedTransfers || {},
-                            originalData: originalDFUData, // Send the UNMODIFIED data
                             transfer: {
                                 dfuCode,
                                 type: this.bulkTransfers[dfuCode] ? 'bulk' : 'individual',

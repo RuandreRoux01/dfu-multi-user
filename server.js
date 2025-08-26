@@ -87,12 +87,6 @@ async function getCompletedTransfers() {
 
 // Save individual transfer to DB
 async function saveTransfer(dfuCode, transferData, userName) {
-    // Check if we already have original data stored
-    const existingTransfer = await db.collection('transfers').findOne({
-        sessionId: TEAM_SESSION_ID,
-        dfuCode
-    });
-    
     const transferDoc = {
         sessionId: TEAM_SESSION_ID,
         dfuCode,
@@ -100,11 +94,6 @@ async function saveTransfer(dfuCode, transferData, userName) {
         completedBy: userName,
         completedAt: new Date()
     };
-    
-    // IMPORTANT: Preserve original data if it exists, don't overwrite it
-    if (existingTransfer && existingTransfer.originalData) {
-        transferDoc.originalData = existingTransfer.originalData;
-    }
     
     // Add any transfer-specific data
     if (transferData.bulkTransfer) {
@@ -177,6 +166,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             { 
                 $set: { 
                     rawData: data,
+                    originalUploadData: data, // STORE PRISTINE COPY
                     dataUploaded: true,
                     uploadedAt: new Date(),
                     uploadedBy: req.body.userName
@@ -262,30 +252,27 @@ app.get('/api/session/data', async (req, res) => {
 
 app.post('/api/updateData', async (req, res) => {
     try {
-        const { rawData, completedTransfers, transfer, originalData } = req.body;
+        const { rawData, completedTransfers, transfer } = req.body;
         
         console.log(`[UPDATE] Processing transfer for DFU ${transfer?.dfuCode}`);
         
-        // CRITICAL: Save original data FIRST before updating with modified data
-        if (transfer?.dfuCode && originalData) {
-            // Store the original data for this DFU before it was modified
-            const transferDoc = await db.collection('transfers').findOne({
-                sessionId: TEAM_SESSION_ID,
-                dfuCode: transfer.dfuCode
-            });
+        // Store the modified records for this DFU
+        if (transfer?.dfuCode) {
+            const modifiedDFURecords = rawData.filter(r => r['DFU'] === transfer.dfuCode);
             
-            // Only save original data if we haven't saved it before
-            if (!transferDoc) {
-                await db.collection('transfers').insertOne({
-                    sessionId: TEAM_SESSION_ID,
-                    dfuCode: transfer.dfuCode,
-                    originalData: originalData, // This is the UNMODIFIED data
-                    savedAt: new Date()
-                });
-            }
+            await db.collection('transfers').updateOne(
+                { sessionId: TEAM_SESSION_ID, dfuCode: transfer.dfuCode },
+                { 
+                    $set: { 
+                        modifiedRecords: modifiedDFURecords,
+                        modifiedAt: new Date()
+                    }
+                },
+                { upsert: true }
+            );
         }
         
-        // Update raw data with the modified version
+        // Update raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { $set: { rawData, lastModified: new Date() }}
@@ -316,35 +303,32 @@ app.post('/api/undoTransfer', async (req, res) => {
         
         console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the transfer record with original data
-        const transferRecord = await db.collection('transfers').findOne({
-            sessionId: TEAM_SESSION_ID,
-            dfuCode
-        });
-        
-        if (!transferRecord || !transferRecord.originalData) {
-            console.error('[UNDO] No original data found for DFU:', dfuCode);
-            return res.status(400).json({ error: 'No original data found for this transfer' });
-        }
-        
-        // Get current session data
+        // Get the session with original upload data
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        if (!session || !session.rawData) {
-            return res.status(400).json({ error: 'No session data found' });
+        if (!session || !session.originalUploadData) {
+            // Fallback: try to reconstruct from current data
+            return res.status(400).json({ error: 'Original data not found. Please re-upload the file.' });
         }
         
-        // Remove all current records for this DFU
-        let updatedRawData = session.rawData.filter(r => r['DFU'] !== dfuCode);
+        // Get original records for this DFU from the pristine upload
+        const originalDFURecords = session.originalUploadData.filter(r => r['DFU'] === dfuCode);
         
-        // Add back the original records
-        updatedRawData = [...updatedRawData, ...transferRecord.originalData];
+        if (originalDFURecords.length === 0) {
+            return res.status(400).json({ error: 'No original records found for this DFU' });
+        }
         
-        // Update the session with restored data
+        // Get current data and remove modified DFU records
+        let restoredData = session.rawData.filter(r => r['DFU'] !== dfuCode);
+        
+        // Add back original records
+        restoredData = [...restoredData, ...originalDFURecords];
+        
+        // Update session with restored data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
                 $set: { 
-                    rawData: updatedRawData,
+                    rawData: restoredData,
                     lastModified: new Date()
                 }
             }
@@ -353,16 +337,18 @@ app.post('/api/undoTransfer', async (req, res) => {
         // Delete the transfer record
         await deleteTransfer(dfuCode);
         
-        // Get all remaining transfers
+        // Get remaining transfers
         const remainingTransfers = await getCompletedTransfers();
+        
+        console.log(`[UNDO] Restored ${originalDFURecords.length} original records for DFU ${dfuCode}`);
         
         res.json({ 
             success: true, 
             remainingTransfers,
-            restoredData: updatedRawData 
+            restoredData 
         });
         
-        // Notify all users with updated data
+        // Notify all users
         io.emit('transferUndone', { 
             dfuCode, 
             undoneBy: userName,
