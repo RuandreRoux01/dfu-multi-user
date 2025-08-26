@@ -284,7 +284,7 @@
             socket.on('variantAdded', ({ dfuCode, variantCode, addedBy }) => {
                 if (addedBy !== userName) {
                     showNotification(`${addedBy} added variant ${variantCode} to DFU ${dfuCode}`, 'info');
-                    loadTeamData();
+                    loadTeamData(); // Reload data to get the new variant
                 }
             });
             

@@ -388,65 +388,24 @@ app.post('/api/clear', async (req, res) => {
     }
 });
 
+// Replace the /api/addVariant endpoint with the provided version
 app.post('/api/addVariant', async (req, res) => {
     try {
-        const { dfuCode, variantCode, userName } = req.body;
+        const { dfuCode, variantCode, newRecords, userName } = req.body;
         
-        console.log(`[ADD VARIANT] ${userName} adding variant ${variantCode} to DFU ${dfuCode}`);
+        console.log(`[ADD VARIANT] Adding variant ${variantCode} to DFU ${dfuCode}`);
         
         // Get current session data
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        
         if (!session || !session.rawData) {
-            return res.status(400).json({ error: 'No data loaded' });
+            return res.status(400).json({ error: 'No session data found' });
         }
-        
-        // Find a sample record for this DFU to use as template
-        const sampleRecord = session.rawData.find(r => r['DFU'] === dfuCode);
-        if (!sampleRecord) {
-            return res.status(400).json({ error: 'DFU not found' });
-        }
-        
-        // Check if variant already exists
-        const existingVariant = session.rawData.find(r => 
-            r['DFU'] === dfuCode && 
-            (r['Product Number'] === variantCode || r['Part Number'] === variantCode)
-        );
-        
-        if (existingVariant) {
-            return res.status(400).json({ error: 'Variant already exists' });
-        }
-        
-        // Get all unique week/location combinations for this DFU
-        const dfuRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
-        const weekLocationCombos = new Set();
-        dfuRecords.forEach(r => {
-            const key = `${r['Week Number']}_${r['Source Location']}`;
-            weekLocationCombos.add(key);
-        });
-        
-        // Create new records for the new variant (one for each week/location)
-        const newRecords = [];
-        weekLocationCombos.forEach(combo => {
-            const [weekNum, sourceLoc] = combo.split('_');
-            const templateRecord = dfuRecords.find(r => 
-                r['Week Number'] == weekNum && 
-                r['Source Location'] == sourceLoc
-            );
-            
-            if (templateRecord) {
-                const newRecord = { ...templateRecord };
-                newRecord['Product Number'] = variantCode;
-                newRecord['weekly fcst'] = 0; // Start with 0 demand
-                newRecord['PartDescription'] = 'Manually Added Variant';
-                newRecord['Manual Variant'] = true;
-                newRecords.push(newRecord);
-            }
-        });
         
         // Add new records to rawData
         const updatedRawData = [...session.rawData, ...newRecords];
         
-        // Update session
+        // Update session with new raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
@@ -457,12 +416,12 @@ app.post('/api/addVariant', async (req, res) => {
             }
         );
         
-        res.json({ success: true, recordsAdded: newRecords.length });
+        res.json({ success: true, message: `Variant ${variantCode} added to DFU ${dfuCode}` });
         
         // Notify all users
         io.emit('variantAdded', { 
             dfuCode, 
-            variantCode,
+            variantCode, 
             addedBy: userName 
         });
         

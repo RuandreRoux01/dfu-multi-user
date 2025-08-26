@@ -701,6 +701,7 @@ class DemandTransferApp {
         }
     }
     
+        // Replace the entire addManualVariant method (around line 1500)
     addManualVariant(dfuCode) {
         const variantCode = prompt('Enter the new variant code:');
         if (!variantCode || !variantCode.trim()) return;
@@ -719,41 +720,92 @@ class DemandTransferApp {
             return;
         }
         
+        // Find a sample record for this DFU to use as template
+        const sampleRecord = this.rawData.find(r => 
+            this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr
+        );
+        
+        if (!sampleRecord) {
+            this.showNotification('Cannot find sample record for DFU', 'error');
+            return;
+        }
+        
         // Get all unique week/location combinations for this DFU
-        const dfuRecords = this.rawData.filter(r => this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr);
+        const dfuRecords = this.rawData.filter(r => 
+            this.toComparableString(r[dfuData.dfuColumn || 'DFU']) === dfuStr
+        );
+        
         const weekLocationCombos = new Set();
         dfuRecords.forEach(r => {
-            const key = `${r[dfuData.weekNumberColumn || 'Week Number']}_${r[dfuData.sourceLocationColumn || 'Source Location']}`;
+            const key = `${r['Week Number']}_${r['Source Location']}_${r['Calendar.week']}`;
             weekLocationCombos.add(key);
         });
         
-        // Create new records for the new variant
+        // Create new records for the new variant with 0 demand
         const newRecords = [];
         weekLocationCombos.forEach(combo => {
-            const [weekNum, sourceLoc] = combo.split('_');
+            const [weekNum, sourceLoc, calendarWeek] = combo.split('_');
             const templateRecord = dfuRecords.find(r => 
-                r[dfuData.weekNumberColumn || 'Week Number'] == weekNum && 
-                r[dfuData.sourceLocationColumn || 'Source Location'] == sourceLoc
+                r['Week Number'] == weekNum && 
+                r['Source Location'] == sourceLoc
             );
             
             if (templateRecord) {
                 const newRecord = { ...templateRecord };
-                newRecord[dfuData.partNumberColumn || 'Product Number'] = variantCode.trim();
-                newRecord[dfuData.demandColumn || 'weekly fcst'] = 0;
-                newRecord[dfuData.partDescriptionColumn || 'PartDescription'] = 'Manually Added Variant';
-                newRecord['Manual Variant'] = true;
+                newRecord['Product Number'] = variantCode.trim();
+                newRecord['weekly fcst'] = 0;
+                newRecord['PartDescription'] = 'Manually added variant';
+                newRecord['Transfer History'] = `Manually added on ${new Date().toLocaleString()}`;
                 newRecords.push(newRecord);
             }
         });
         
-        // Add new records to rawData
-        this.rawData = [...this.rawData, ...newRecords];
+        if (newRecords.length === 0) {
+            // Fallback: create at least one record
+            const newRecord = { ...sampleRecord };
+            newRecord['Product Number'] = variantCode.trim();
+            newRecord['weekly fcst'] = 0;
+            newRecord['PartDescription'] = 'Manually added variant';
+            newRecord['Transfer History'] = `Manually added on ${new Date().toLocaleString()}`;
+            newRecords.push(newRecord);
+        }
         
-        // Re-process data
+        // Add records locally first for immediate UI update
+        this.rawData.push(...newRecords);
+        
+        // Save to database (for multi-user mode)
+        if (window.userName) { // Check if in multi-user mode
+            fetch('/api/addVariant', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    dfuCode: dfuStr,
+                    variantCode: variantCode.trim(),
+                    newRecords: newRecords,
+                    userName: window.userName
+                })
+            }).then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    this.showNotification(`Variant ${variantCode} added successfully`, 'success');
+                } else {
+                    this.showNotification('Failed to save variant to database', 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving variant:', error);
+                this.showNotification('Error saving variant to database', 'error');
+            });
+        }
+        
+        // Re-process data to show the new variant
         this.processMultiVariantDFUs(this.rawData);
-        
-        this.showNotification(`Added variant ${variantCode} to DFU ${dfuCode}`, 'success');
         this.render();
+        
+        // Re-select the DFU to show the updated details
+        setTimeout(() => {
+            this.selectDFU(dfuCode);
+        }, 100);
     }
     
     executeTransfer(dfuCode) {
