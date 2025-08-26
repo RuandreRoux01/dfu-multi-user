@@ -257,7 +257,7 @@
                 }
             });
             
-            socket.on('transferUndone', ({ dfuCode, undoneBy, remainingTransfers }) => {
+            socket.on('transferUndone', ({ dfuCode, undoneBy, remainingTransfers, requiresReload }) => {
                 if (undoneBy !== userName) {
                     showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
                     
@@ -268,12 +268,14 @@
                         delete appInstance.bulkTransfers[dfuCode];
                         delete appInstance.granularTransfers[dfuCode];
                         
-                        // If we have remaining transfers, update them
+                        // Update with remaining transfers
                         if (remainingTransfers) {
                             appInstance.completedTransfers = remainingTransfers;
                         }
-                        
-                        // Reload data to ensure sync
+                    }
+                    
+                    // If data needs reloading (structural changes), reload
+                    if (requiresReload) {
                         loadTeamData();
                     }
                 }
@@ -375,9 +377,11 @@
                     if (response.ok) {
                         const result = await response.json();
                         
-                        // Restore original data
-                        if (originalRawDataBackup) {
-                            this.rawData = JSON.parse(JSON.stringify(originalRawDataBackup));
+                        // Update with the restored data from server
+                        if (result.restoredData) {
+                            this.rawData = result.restoredData;
+                            this.originalRawData = JSON.parse(JSON.stringify(result.restoredData));
+                            originalRawDataBackup = JSON.parse(JSON.stringify(result.restoredData));
                         }
                         
                         // Clear local transfer state
@@ -385,22 +389,27 @@
                         delete this.transfers[dfuCode];
                         delete this.bulkTransfers[dfuCode];
                         delete this.granularTransfers[dfuCode];
+                        delete this.lastExecutionSummary[dfuCode];
                         
                         // Update with remaining transfers from server
                         if (result.remainingTransfers) {
                             this.completedTransfers = result.remainingTransfers;
                         }
                         
+                        // Re-process the data to update the UI
+                        this.multiVariantDFUs = {};
+                        this.filteredDFUs = {};
                         this.processMultiVariantDFUs(this.rawData);
                         
-                        showNotification('Transfer undone successfully', 'success');
+                        showNotification('Transfer undone successfully - all variants restored', 'success');
                         
                         preserveScrollPosition(() => {
                             this.render();
                         });
                         
-                        // Reload to ensure full sync
-                        setTimeout(() => loadTeamData(), 500);
+                    } else {
+                        const error = await response.json();
+                        showNotification('Failed to undo transfer: ' + (error.error || 'Unknown error'), 'error');
                     }
                 } catch (error) {
                     showNotification('Failed to undo transfer', 'error');
@@ -466,7 +475,6 @@
                     showNotification('Export failed', 'error');
                 }
             };
-
             
             const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
             appInstance.selectDFU = function(dfuCode) {

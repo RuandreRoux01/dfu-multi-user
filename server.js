@@ -95,12 +95,25 @@ async function saveTransfer(dfuCode, transferData, userName) {
         completedAt: new Date()
     };
     
+    // IMPORTANT: Store original data snapshot for this DFU before transfer
+    const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+    if (session && session.rawData) {
+        const dfuOriginalRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
+        transferDoc.originalData = dfuOriginalRecords; // Store original state
+    }
+    
     // Add any transfer-specific data
     if (transferData.bulkTransfer) {
         transferDoc.bulkTransfer = transferData.bulkTransfer;
     }
     if (transferData.granularTransfers) {
         transferDoc.granularTransfers = transferData.granularTransfers;
+    }
+    if (transferData.transfers) {
+        transferDoc.transfers = transferData.transfers;
+    }
+    if (transferData.targetVariant) {
+        transferDoc.targetVariant = transferData.targetVariant;
     }
     
     await db.collection('transfers').replaceOne(
@@ -280,22 +293,58 @@ app.post('/api/undoTransfer', async (req, res) => {
         
         console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the original raw data before any transfers
-        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        // Get the transfer record with original data
+        const transferRecord = await db.collection('transfers').findOne({
+            sessionId: TEAM_SESSION_ID,
+            dfuCode
+        });
         
-        // Delete from transfers collection
+        if (!transferRecord || !transferRecord.originalData) {
+            console.error('[UNDO] No original data found for DFU:', dfuCode);
+            return res.status(400).json({ error: 'No original data found for this transfer' });
+        }
+        
+        // Get current session data
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        if (!session || !session.rawData) {
+            return res.status(400).json({ error: 'No session data found' });
+        }
+        
+        // Remove all current records for this DFU
+        let updatedRawData = session.rawData.filter(r => r['DFU'] !== dfuCode);
+        
+        // Add back the original records
+        updatedRawData = [...updatedRawData, ...transferRecord.originalData];
+        
+        // Update the session with restored data
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
+            { 
+                $set: { 
+                    rawData: updatedRawData,
+                    lastModified: new Date()
+                }
+            }
+        );
+        
+        // Delete the transfer record
         await deleteTransfer(dfuCode);
         
         // Get all remaining transfers
         const remainingTransfers = await getCompletedTransfers();
         
-        res.json({ success: true, remainingTransfers });
+        res.json({ 
+            success: true, 
+            remainingTransfers,
+            restoredData: updatedRawData 
+        });
         
-        // Notify all users with updated transfer list
+        // Notify all users with updated data
         io.emit('transferUndone', { 
             dfuCode, 
             undoneBy: userName,
-            remainingTransfers 
+            remainingTransfers,
+            requiresReload: true 
         });
         
     } catch (error) {
