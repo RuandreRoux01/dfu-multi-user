@@ -61,6 +61,17 @@ async function initializeDatabase() {
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
+// Helper function to calculate date from week number
+function getDateFromWeekNumber(year, weekNumber) {
+    const jan1 = new Date(year, 0, 1);
+    const jan1DayOfWeek = jan1.getDay();
+    const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
+    const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
+    const targetDate = new Date(firstMonday);
+    targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
+    return targetDate;
+}
+
 // Helper to get completed transfers from DB
 async function getCompletedTransfers() {
     const transfers = await db.collection('transfers').find({ 
@@ -322,8 +333,36 @@ app.post('/api/clear', async (req, res) => {
 app.post('/api/export', async (req, res) => {
     try {
         const { rawData } = req.body;
+        
+        // Process the data to ensure proper date formatting
+        const processedData = (rawData || []).map(record => {
+            const processed = { ...record };
+            
+            // Fix Calendar.week based on Week Number
+            if (processed['Week Number']) {
+                const weekNum = parseInt(processed['Week Number']);
+                
+                if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
+                    // Determine the year - check if Calendar.week has a valid year
+                    let year = 2025; // Default year
+                    
+                    if (processed['Calendar.week']) {
+                        const existingDate = new Date(processed['Calendar.week']);
+                        if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
+                            year = existingDate.getFullYear();
+                        }
+                    }
+                    
+                    const date = getDateFromWeekNumber(year, weekNum);
+                    processed['Calendar.week'] = date.toISOString().split('T')[0];
+                }
+            }
+            
+            return processed;
+        });
+        
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(rawData || []);
+        const ws = XLSX.utils.json_to_sheet(processedData);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
         
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });

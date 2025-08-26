@@ -52,6 +52,75 @@ class DemandTransferApp {
             notification.remove();
         }, 3000);
     }
+    // Add this helper function after the constructor (around line 50)
+// Inside the DemandTransferApp class:
+
+    // Helper function to get date from week number
+    getDateFromWeekNumber(year, weekNumber) {
+        // Create date object for January 1st of the given year
+        const jan1 = new Date(year, 0, 1);
+        
+        // Get the day of week for January 1st (0 = Sunday, 1 = Monday, etc.)
+        const jan1DayOfWeek = jan1.getDay();
+        
+        // Calculate days to add to get to the first Monday of the year
+        const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
+        
+        // Get the first Monday of the year
+        const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
+        
+        // Calculate the date for the given week number
+        const targetDate = new Date(firstMonday);
+        targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
+        
+        return targetDate;
+    }
+
+    // Replace the exportData function (around line 1520) with this:
+    async exportData() {
+        try {
+            // Create a copy of the data with properly formatted dates
+            const formattedData = this.rawData.map(record => {
+                const formattedRecord = { ...record };
+                
+                // Fix Calendar.week date based on Week Number
+                if (formattedRecord['Week Number']) {
+                    const weekNum = parseInt(formattedRecord['Week Number']);
+                    
+                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
+                        // Determine the year - check if Calendar.week has a valid year
+                        let year = 2025; // Default year
+                        
+                        if (formattedRecord['Calendar.week']) {
+                            const existingDate = new Date(formattedRecord['Calendar.week']);
+                            if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
+                                year = existingDate.getFullYear();
+                            }
+                        }
+                        
+                        const date = this.getDateFromWeekNumber(year, weekNum);
+                        
+                        // Format as YYYY-MM-DD
+                        const yearStr = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        formattedRecord['Calendar.week'] = `${yearStr}-${month}-${day}`;
+                    }
+                }
+                
+                return formattedRecord;
+            });
+            
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet(formattedData);
+            XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
+            XLSX.writeFile(wb, 'Updated_Demand_Data.xlsx');
+            this.showNotification('Data exported successfully');
+        } catch (error) {
+            console.error('Error exporting data:', error);
+            this.showNotification('Error exporting data: ' + error.message, 'error');
+        }
+    }
     
     formatNumber(num) {
         return new Intl.NumberFormat().format(num);

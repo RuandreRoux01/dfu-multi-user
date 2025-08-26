@@ -410,14 +410,40 @@
             
             appInstance.exportData = async function() {
                 try {
+                    // Helper function to calculate date from week number
+                    function getDateFromWeekNumber(year, weekNumber) {
+                        const jan1 = new Date(year, 0, 1);
+                        const jan1Day = jan1.getDay();
+                        const daysToMonday = jan1Day === 0 ? 1 : (8 - jan1Day) % 7;
+                        const firstMonday = new Date(year, 0, 1 + daysToMonday);
+                        const targetDate = new Date(firstMonday);
+                        targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
+                        return targetDate;
+                    }
+                    
                     const formattedData = this.rawData.map(record => {
                         const formatted = { ...record };
-                        if (formatted['Calendar.week']) {
-                            const date = new Date(formatted['Calendar.week']);
-                            if (!isNaN(date.getTime())) {
-                                formatted['Calendar.week'] = date.toISOString().split('T')[0];
+                        
+                        // Fix Calendar.week based on Week Number
+                        if (formatted['Week Number']) {
+                            const weekNum = parseInt(formatted['Week Number']);
+                            
+                            if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
+                                // Determine the year
+                                let year = 2025;
+                                
+                                if (formatted['Calendar.week']) {
+                                    const existingDate = new Date(formatted['Calendar.week']);
+                                    if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
+                                        year = existingDate.getFullYear();
+                                    }
+                                }
+                                
+                                const targetDate = getDateFromWeekNumber(year, weekNum);
+                                formatted['Calendar.week'] = targetDate.toISOString().split('T')[0];
                             }
                         }
+                        
                         return formatted;
                     });
                     
@@ -440,6 +466,7 @@
                     showNotification('Export failed', 'error');
                 }
             };
+
             
             const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
             appInstance.selectDFU = function(dfuCode) {
