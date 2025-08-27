@@ -33,11 +33,9 @@ MongoClient.connect(process.env.MONGODB_URI)
 
 async function initializeDatabase() {
     try {
-        // Ensure collections exist
         await db.createCollection('sessions').catch(() => {});
         await db.createCollection('transfers').catch(() => {});
         
-        // Initialize or restore session
         let session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
         
         if (!session) {
@@ -61,7 +59,6 @@ async function initializeDatabase() {
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 }});
 
-// Helper to get completed transfers from DB
 async function getCompletedTransfers() {
     const transfers = await db.collection('transfers').find({ 
         sessionId: TEAM_SESSION_ID 
@@ -74,10 +71,7 @@ async function getCompletedTransfers() {
     return completed;
 }
 
-// Save individual transfer to DB
 async function saveTransfer(dfuCode, transferData, userName) {
-    console.log(`[SAVE TRANSFER] Saving transfer for DFU ${dfuCode} by ${userName}`);
-    
     const transferDoc = {
         sessionId: TEAM_SESSION_ID,
         dfuCode,
@@ -86,27 +80,22 @@ async function saveTransfer(dfuCode, transferData, userName) {
         completedAt: new Date()
     };
     
-    // Check if this transfer already exists (to preserve original data)
     const existingTransfer = await db.collection('transfers').findOne({ 
         sessionId: TEAM_SESSION_ID, 
         dfuCode 
     });
     
-    // Store original data ONLY if this is the first transfer for this DFU
     if (!existingTransfer) {
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
         if (session && session.rawData) {
             const dfuOriginalRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
-            transferDoc.originalData = JSON.parse(JSON.stringify(dfuOriginalRecords)); // Deep copy
-            console.log(`[SAVE TRANSFER] Storing ${dfuOriginalRecords.length} original records for DFU ${dfuCode}`);
+            transferDoc.originalData = dfuOriginalRecords;
+            console.log(`[TRANSFER] Storing original data for DFU ${dfuCode}:`, dfuOriginalRecords.length, 'records');
         }
     } else {
-        // Preserve existing original data
         transferDoc.originalData = existingTransfer.originalData;
-        console.log(`[SAVE TRANSFER] Preserving existing original data for DFU ${dfuCode}`);
     }
     
-    // Add transfer-specific data
     if (transferData.bulkTransfer) {
         transferDoc.bulkTransfer = transferData.bulkTransfer;
     }
@@ -125,11 +114,8 @@ async function saveTransfer(dfuCode, transferData, userName) {
         transferDoc,
         { upsert: true }
     );
-    
-    console.log(`[SAVE TRANSFER] Transfer saved successfully for DFU ${dfuCode}`);
 }
 
-// API Routes
 app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'OK', 
@@ -163,7 +149,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
         const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         
-        // Clear old transfers when new data uploaded
         await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
         
         await db.collection('sessions').updateOne(
@@ -260,13 +245,11 @@ app.post('/api/updateData', async (req, res) => {
         
         console.log(`[UPDATE] Processing transfer for DFU ${transfer?.dfuCode}`);
         
-        // Update raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { $set: { rawData, lastModified: new Date() }}
         );
         
-        // Save each completed transfer to DB
         if (completedTransfers && Object.keys(completedTransfers).length > 0) {
             for (const [dfuCode, transferData] of Object.entries(completedTransfers)) {
                 await saveTransfer(dfuCode, transferData, transfer?.completedBy || 'Unknown');
@@ -292,27 +275,22 @@ app.post('/api/addVariant', async (req, res) => {
         console.log(`[ADD VARIANT] Adding variant ${variantCode} to DFU ${dfuCode}`);
         console.log(`[ADD VARIANT] Received ${newRecords ? newRecords.length : 0} new records`);
         
-        // Validate input
         if (!dfuCode || !variantCode) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
         
-        // Ensure newRecords is an array
         const recordsToAdd = Array.isArray(newRecords) ? newRecords : [];
         
-        // Get current session data
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
         
         if (!session || !session.rawData) {
             return res.status(400).json({ error: 'No session data found' });
         }
         
-        // If no new records provided, create them based on existing DFU records
         if (recordsToAdd.length === 0) {
             const dfuRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
             
             if (dfuRecords.length > 0) {
-                // Get unique week/location combinations
                 const uniqueCombos = new Map();
                 dfuRecords.forEach(r => {
                     const key = `${r['Week Number']}_${r['Source Location']}`;
@@ -321,7 +299,6 @@ app.post('/api/addVariant', async (req, res) => {
                     }
                 });
                 
-                // Create new records for each unique combination
                 uniqueCombos.forEach((templateRecord) => {
                     const newRecord = { ...templateRecord };
                     newRecord['Product Number'] = variantCode.trim();
@@ -331,7 +308,6 @@ app.post('/api/addVariant', async (req, res) => {
                     recordsToAdd.push(newRecord);
                 });
             } else {
-                // Create at least one record if no DFU records found
                 const sampleRecord = session.rawData[0];
                 if (sampleRecord) {
                     const newRecord = { ...sampleRecord };
@@ -345,10 +321,8 @@ app.post('/api/addVariant', async (req, res) => {
             }
         }
         
-        // Add new records to rawData
         const updatedRawData = [...session.rawData, ...recordsToAdd];
         
-        // Update session with new raw data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
@@ -367,7 +341,6 @@ app.post('/api/addVariant', async (req, res) => {
             recordsAdded: recordsToAdd.length
         });
         
-        // Notify all users
         io.emit('variantAdded', { 
             dfuCode, 
             variantCode, 
@@ -386,45 +359,25 @@ app.post('/api/undoTransfer', async (req, res) => {
         
         console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the current session data
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
-        if (!session || !session.rawData) {
+        if (!session) {
             return res.status(400).json({ error: 'No session data found' });
         }
         
-        // Get the specific transfer being undone to retrieve original data
         const transferToUndo = await db.collection('transfers').findOne({ 
             sessionId: TEAM_SESSION_ID, 
             dfuCode 
         });
         
-        if (!transferToUndo) {
-            return res.status(400).json({ error: 'No transfer found for this DFU' });
+        if (!transferToUndo || !transferToUndo.originalData) {
+            return res.status(400).json({ error: 'No original data found for this transfer' });
         }
         
-        // Start with current session data
         let currentData = [...session.rawData];
         
-        // Remove all current records for this DFU
         currentData = currentData.filter(r => r['DFU'] !== dfuCode);
+        currentData = [...currentData, ...transferToUndo.originalData];
         
-        // If we have original data stored, restore it
-        if (transferToUndo.originalData && transferToUndo.originalData.length > 0) {
-            console.log(`[UNDO] Restoring ${transferToUndo.originalData.length} original records for DFU ${dfuCode}`);
-            
-            // Add back the original records
-            currentData = [...currentData, ...transferToUndo.originalData];
-        } else {
-            console.log(`[UNDO] No original data found for DFU ${dfuCode}, attempting reconstruction`);
-            
-            // If no original data stored, we need to reconstruct from transfer history
-            // This is a fallback - ideally originalData should always be stored
-            return res.status(400).json({ 
-                error: 'Cannot undo - original data not found. Please reload the original file.' 
-            });
-        }
-        
-        // Update the session with restored data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
@@ -435,47 +388,42 @@ app.post('/api/undoTransfer', async (req, res) => {
             }
         );
         
-        // Delete the transfer record
         await db.collection('transfers').deleteOne({ 
             sessionId: TEAM_SESSION_ID, 
             dfuCode 
         });
         
-        // Get all remaining transfers for the response
-        const remainingTransfers = await db.collection('transfers').find({ 
+        const remainingTransfers = {};
+        const remainingTransfersArray = await db.collection('transfers').find({ 
             sessionId: TEAM_SESSION_ID 
         }).toArray();
         
-        // Convert array to object format expected by frontend
-        const completedTransfers = {};
-        remainingTransfers.forEach(t => {
-            completedTransfers[t.dfuCode] = t;
+        remainingTransfersArray.forEach(t => {
+            remainingTransfers[t.dfuCode] = t;
         });
         
-        console.log(`[UNDO] Successfully restored DFU ${dfuCode}, ${remainingTransfers.length} transfers remain`);
+        console.log(`[UNDO] Successfully restored DFU ${dfuCode}, ${remainingTransfersArray.length} transfers remain`);
         
         res.json({ 
             success: true, 
-            completedTransfers: completedTransfers,
+            remainingTransfers,
             message: `Transfer for DFU ${dfuCode} has been undone - all variants restored to original state`
         });
         
-        // Notify all users of the update
         io.emit('dataUpdated', { 
-            dfuCode: dfuCode,
-            message: `${userName} undid transfer for DFU ${dfuCode}`,
-            updatedBy: userName 
+            rawData: currentData, 
+            completedTransfers: remainingTransfers,
+            message: `${userName} undid transfer for DFU ${dfuCode}`
         });
         
     } catch (error) {
         console.error('[UNDO ERROR]', error);
-        res.status(500).json({ error: 'Failed to undo transfer: ' + error.message });
+        res.status(500).json({ error: 'Failed to undo transfer' });
     }
 });
 
 app.post('/api/clear', async (req, res) => {
     try {
-        // Clear session data
         await db.collection('sessions').updateOne(
             { _id: TEAM_SESSION_ID },
             { 
@@ -488,7 +436,6 @@ app.post('/api/clear', async (req, res) => {
             }
         );
         
-        // Clear all transfers
         await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
         
         res.json({ success: true });
@@ -517,7 +464,6 @@ app.post('/api/export', async (req, res) => {
     }
 });
 
-// WebSocket
 io.on('connection', (socket) => {
     console.log('[WS] Client connected');
     
@@ -536,7 +482,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Helper function - Updated to show ALL DFUs
 function processMultiVariantDFUs(data) {
     const grouped = {};
     
@@ -565,7 +510,6 @@ function processMultiVariantDFUs(data) {
     const allDFUs = {};
     Object.keys(grouped).forEach(dfuCode => {
         const variants = Array.from(grouped[dfuCode].variants);
-        // Include ALL DFUs, not just multi-variant ones
         const variantDemand = {};
         variants.forEach(variant => {
             const variantRecords = grouped[dfuCode].records.filter(r => 
