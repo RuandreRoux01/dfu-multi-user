@@ -30,7 +30,10 @@
         }
         
         #mainContent {
-            padding-right: 280px;
+            padding-left: 20px;
+            padding-right: 300px;
+            max-width: 1400px;
+            margin: 0 auto;
         }
         
         #activeUsersPanel {
@@ -42,13 +45,13 @@
             overflow-y: auto;
         }
         
-        /* Add styles for filters */
         #plantLocationFilter, #productionLineFilter {
             min-width: 180px;
         }
         
         @media (max-width: 1024px) {
             #mainContent {
+                padding-left: 20px;
                 padding-right: 20px;
             }
             
@@ -89,7 +92,6 @@
     <div id="notifications"></div>
     
     <!-- Active Users Panel -->
-    <!-- Active Users Panel -->
     <div id="activeUsersPanel" class="bg-white rounded-lg shadow-lg p-4 hidden z-40">
         <div class="flex justify-between items-start mb-3">
             <h3 class="font-semibold">Active Team Members</h3>
@@ -111,18 +113,12 @@
     
     <script src="script.js"></script>
     <script>
-        // Global variables
         let appInstance = null;
         let userName = null;
         let socket = null;
         let notificationCount = 0;
         let originalRawDataBackup = null;
-        let allRawData = [];
-        let completedTransfers = {};
-        let selectedDFU = null;
-        let currentUser = null;
         
-        // Fixed session ID - always the same
         const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
         
         async function joinTeam() {
@@ -148,23 +144,15 @@
                 
                 if (data.success) {
                     userName = userNameInput;
-                    currentUser = userNameInput;
                     
-                    // Hide login modal
                     document.getElementById('loginModal').style.display = 'none';
-                    
-                    // Show active users panel
                     document.getElementById('activeUsersPanel').classList.remove('hidden');
                     
-                    // Initialize app
                     if (!appInstance) {
                         appInstance = new DemandTransferApp();
                     }
                     
-                    // Setup features
                     setupFeatures();
-                    
-                    // Load data
                     loadTeamData();
                     
                     showNotification(`Welcome ${userName}!`, 'success');
@@ -213,115 +201,8 @@
                 }
             }, 50);
         }
-
-        // NEW: Add refresh function for undo functionality
-        async function refreshData() {
-            try {
-                console.log('[REFRESH] Starting complete data refresh...');
-                
-                const response = await fetch('/api/sessionData');
-                if (!response.ok) {
-                    throw new Error('Failed to fetch session data');
-                }
-                
-                const data = await response.json();
-                console.log('[REFRESH] Received data:', data);
-                
-                // Update global variables
-                if (data.rawData) {
-                    allRawData = data.rawData;
-                    console.log('[REFRESH] Updated allRawData with', allRawData.length, 'records');
-                }
-                
-                if (data.completedTransfers) {
-                    completedTransfers = data.completedTransfers;
-                    console.log('[REFRESH] Updated completedTransfers with', completedTransfers.length, 'transfers');
-                }
-                
-                // Force complete UI rebuild
-                applyFilters(); // This will rebuild the DFU list
-                
-                // If a DFU was selected, refresh its details
-                if (selectedDFU) {
-                    console.log('[REFRESH] Refreshing details for selected DFU:', selectedDFU);
-                    showDFUDetails(selectedDFU);
-                }
-                
-                console.log('[REFRESH] Complete refresh finished');
-                
-            } catch (error) {
-                console.error('[REFRESH ERROR]', error);
-                showNotification('Failed to refresh data', 'error');
-            }
-        }
-
-        // NEW: Add undo function
-        async function undoTransfer(dfuCode) {
-            if (!currentUser) {
-                showNotification('Please enter your name first', 'error');
-                return;
-            }
-
-            if (!confirm(`Are you sure you want to undo the transfer for DFU ${dfuCode}? This will restore all variants to their original demand values.`)) {
-                return;
-            }
-
-            try {
-                console.log(`[UNDO] Starting undo for DFU ${dfuCode}`);
-                
-                const response = await fetch('/api/undoTransfer', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ dfuCode, userName: currentUser })
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.error || 'Failed to undo transfer');
-                }
-
-                const result = await response.json();
-                console.log('[UNDO] Success:', result);
-
-                // Show success message
-                showNotification(result.message || `Transfer for DFU ${dfuCode} has been undone`, 'success');
-                
-                // Force a complete UI refresh
-                console.log('[UNDO] Forcing complete UI refresh...');
-                
-                // Close any open DFU details
-                if (selectedDFU === dfuCode) {
-                    selectedDFU = null;
-                    const dfuDetailsElement = document.getElementById('dfuDetails');
-                    if (dfuDetailsElement) {
-                        dfuDetailsElement.style.display = 'none';
-                    }
-                }
-                
-                // Refresh the entire interface
-                await refreshData();
-                
-            } catch (error) {
-                console.error('[UNDO ERROR]', error);
-                showNotification(`Failed to undo transfer: ${error.message}`, 'error');
-            }
-        }
-
-        // Placeholder functions for compatibility
-        function applyFilters() {
-            if (appInstance) {
-                appInstance.filterDFUs();
-            }
-        }
-
-        function showDFUDetails(dfuCode) {
-            if (appInstance) {
-                appInstance.selectDFU(dfuCode);
-            }
-        }
         
         function setupFeatures() {
-            // Connect WebSocket
             socket = io();
             
             socket.on('connect', () => {
@@ -351,7 +232,6 @@
                 if (uploadedBy !== userName) {
                     showNotification(`${uploadedBy} uploaded new data`, 'info');
                     
-                    // Reset cycle data state when new demand data is uploaded
                     if (cycleDataReset && appInstance) {
                         appInstance.variantCycleDates = {};
                         appInstance.hasVariantCycleData = false;
@@ -368,37 +248,10 @@
                 }
             });
             
-            socket.on('dataUpdated', ({ dfuCode, updatedBy, rawData, completedTransfers, message, forceRefresh }) => {
+            socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
                 if (updatedBy !== userName) {
-                    showNotification(message || `${updatedBy} updated DFU ${dfuCode}`, 'info');
-                    
-                    if (forceRefresh && rawData) {
-                        // Force complete refresh of all data
-                        allRawData = rawData;
-                        
-                        // Update completed transfers
-                        if (completedTransfers) {
-                            // Convert array to object format if needed
-                            if (Array.isArray(completedTransfers)) {
-                                const transfersObj = {};
-                                completedTransfers.forEach(transfer => {
-                                    transfersObj[transfer.dfuCode] = transfer;
-                                });
-                                completedTransfers = transfersObj;
-                            }
-                        }
-                        
-                        // Force complete UI rebuild
-                        console.log('[SOCKET] Forcing complete UI rebuild...');
-                        applyFilters();
-                        
-                        // If a DFU was selected, refresh its details
-                        if (selectedDFU) {
-                            showDFUDetails(selectedDFU);
-                        }
-                    } else {
-                        loadTeamData();
-                    }
+                    showNotification(`${updatedBy} updated DFU ${dfuCode}`, 'info');
+                    loadTeamData();
                 }
             });
             
@@ -406,20 +259,17 @@
                 if (undoneBy !== userName) {
                     showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
                     
-                    // Update the local state to reflect the undo
                     if (appInstance && appInstance.completedTransfers) {
                         delete appInstance.completedTransfers[dfuCode];
                         delete appInstance.transfers[dfuCode];
                         delete appInstance.bulkTransfers[dfuCode];
                         delete appInstance.granularTransfers[dfuCode];
                         
-                        // Update with remaining transfers
                         if (remainingTransfers) {
                             appInstance.completedTransfers = remainingTransfers;
                         }
                     }
                     
-                    // If data needs reloading (structural changes), reload
                     if (requiresReload) {
                         loadTeamData();
                     }
@@ -429,7 +279,7 @@
             socket.on('variantAdded', ({ dfuCode, variantCode, addedBy }) => {
                 if (addedBy !== userName) {
                     showNotification(`${addedBy} added variant ${variantCode} to DFU ${dfuCode}`, 'info');
-                    loadTeamData(); // Reload data to get the new variant
+                    loadTeamData();
                 }
             });
             
@@ -438,7 +288,6 @@
                 window.location.reload();
             });
             
-            // Override app methods for simplified API
             appInstance.loadData = async function(file) {
                 this.isLoading = true;
                 this.render();
@@ -456,7 +305,6 @@
                     const result = await response.json();
                     
                     if (result.success) {
-                        // Reset cycle data locally when new demand data is uploaded
                         this.variantCycleDates = {};
                         this.hasVariantCycleData = false;
                         
@@ -518,53 +366,57 @@
                 }, 500);
             };
             
-            // UPDATED: Enhanced undo transfer with proper data restoration
-                appInstance.undoTransfer = async function(dfuCode) {
-                    try {
-                        console.log(`[CLIENT] Initiating undo for DFU ${dfuCode}`);
-                        
-                        const response = await fetch('/api/undoTransfer', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ dfuCode, userName })
-                        });
-                        
+            appInstance.undoTransfer = async function(dfuCode) {
+                try {
+                    showNotification('Undoing transfer - please wait...', 'info');
+                    
+                    const response = await fetch('/api/undoTransfer', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ dfuCode, userName })
+                    });
+                    
+                    if (response.ok) {
                         const result = await response.json();
                         
-                        if (response.ok && result.success) {
-                            console.log('[CLIENT] Undo successful, reloading data...');
-                            
-                            // Clear local transfer state
-                            delete this.completedTransfers[dfuCode];
-                            delete this.transfers[dfuCode];
-                            delete this.bulkTransfers[dfuCode];
-                            delete this.granularTransfers[dfuCode];
-                            delete this.lastExecutionSummary[dfuCode];
-                            
-                            // Update completed transfers from server response
-                            if (result.completedTransfers) {
-                                this.completedTransfers = result.completedTransfers;
-                            }
-                            
-                            showNotification(result.message || 'Transfer undone successfully', 'success');
-                            
-                            // Reload all data from server to ensure consistency
+                        // Clear local transfer state immediately
+                        delete this.completedTransfers[dfuCode];
+                        delete this.transfers[dfuCode];
+                        delete this.bulkTransfers[dfuCode];
+                        delete this.granularTransfers[dfuCode];
+                        delete this.lastExecutionSummary[dfuCode];
+                        
+                        // Update with remaining transfers from server
+                        if (result.remainingTransfers) {
+                            this.completedTransfers = result.remainingTransfers;
+                        }
+                        
+                        showNotification('Transfer undone successfully - refreshing data...', 'success');
+                        
+                        // Force complete data reload from server
+                        setTimeout(async () => {
                             await loadTeamData();
                             
-                        } else {
-                            const errorMsg = result.error || 'Failed to undo transfer';
-                            showNotification(errorMsg, 'error');
-                            console.error('[CLIENT] Undo failed:', errorMsg);
-                        }
-                    } catch (error) {
-                        showNotification('Failed to undo transfer: ' + error.message, 'error');
-                        console.error('[CLIENT] Undo error:', error);
+                            // Re-select the same DFU after refresh
+                            setTimeout(() => {
+                                if (this.multiVariantDFUs[dfuCode]) {
+                                    this.selectDFU(dfuCode);
+                                }
+                            }, 200);
+                        }, 500);
+                        
+                    } else {
+                        const error = await response.json();
+                        showNotification('Failed to undo transfer: ' + (error.error || 'Unknown error'), 'error');
                     }
-                };
+                } catch (error) {
+                    showNotification('Failed to undo transfer - network error', 'error');
+                    console.error('Undo error:', error);
+                }
+            };
             
             appInstance.exportData = async function() {
                 try {
-                    // Helper function to calculate date from week number
                     function getDateFromWeekNumber(year, weekNumber) {
                         const jan1 = new Date(year, 0, 1);
                         const jan1Day = jan1.getDay();
@@ -578,12 +430,10 @@
                     const formattedData = this.rawData.map(record => {
                         const formatted = { ...record };
                         
-                        // Fix Calendar.week based on Week Number
                         if (formatted['Week Number']) {
                             const weekNum = parseInt(formatted['Week Number']);
                             
                             if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
-                                // Determine the year
                                 let year = 2025;
                                 
                                 if (formatted['Calendar.week']) {
@@ -671,23 +521,19 @@
                     appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
                     originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
                     
-                    // Properly sync completed transfers from DB
                     if (data.completedTransfers) {
                         appInstance.completedTransfers = data.completedTransfers;
                         
-                        // Mark DFUs as completed in the UI
                         Object.keys(data.completedTransfers).forEach(dfuCode => {
                             if (!appInstance.transfers) appInstance.transfers = {};
                             appInstance.transfers[dfuCode] = true;
                         });
                     }
                     
-                    // Properly handle cycle data state
                     if (data.hasVariantCycleData && data.variantCycleData) {
                         appInstance.variantCycleDates = data.variantCycleData;
                         appInstance.hasVariantCycleData = true;
                     } else {
-                        // Reset cycle data if not present
                         appInstance.variantCycleDates = {};
                         appInstance.hasVariantCycleData = false;
                     }
@@ -698,7 +544,6 @@
                         appInstance.render();
                     });
                 } else {
-                    // No data loaded - ensure cycle data is reset
                     if (appInstance) {
                         appInstance.variantCycleDates = {};
                         appInstance.hasVariantCycleData = false;
