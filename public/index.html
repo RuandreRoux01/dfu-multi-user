@@ -90,7 +90,13 @@
     
     <!-- Active Users Panel -->
     <div id="activeUsersPanel" class="bg-white rounded-lg shadow-lg p-4 hidden z-40">
-        <h3 class="font-semibold mb-2">Active Team Members</h3>
+        <div class="flex justify-between items-center mb-2">
+            <h3 class="font-semibold">Active Team Members</h3>
+            <div class="text-xs text-gray-400">
+                <p>Version 2.21.0</p>
+                <p>Build: 2025-08-27-undo-fix</p>
+            </div>
+        </div>
         <div id="activeUsersList" class="mb-4 text-sm"></div>
         <button onclick="clearAllData()" class="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 text-sm">
             Clear All Data
@@ -110,6 +116,10 @@
         let socket = null;
         let notificationCount = 0;
         let originalRawDataBackup = null;
+        let allRawData = [];
+        let completedTransfers = {};
+        let selectedDFU = null;
+        let currentUser = null;
         
         // Fixed session ID - always the same
         const TEAM_SESSION_ID = 'TEAM_DFU_TRANSFER_SESSION';
@@ -137,6 +147,7 @@
                 
                 if (data.success) {
                     userName = userNameInput;
+                    currentUser = userNameInput;
                     
                     // Hide login modal
                     document.getElementById('loginModal').style.display = 'none';
@@ -201,6 +212,112 @@
                 }
             }, 50);
         }
+
+        // NEW: Add refresh function for undo functionality
+        async function refreshData() {
+            try {
+                console.log('[REFRESH] Starting complete data refresh...');
+                
+                const response = await fetch('/api/sessionData');
+                if (!response.ok) {
+                    throw new Error('Failed to fetch session data');
+                }
+                
+                const data = await response.json();
+                console.log('[REFRESH] Received data:', data);
+                
+                // Update global variables
+                if (data.rawData) {
+                    allRawData = data.rawData;
+                    console.log('[REFRESH] Updated allRawData with', allRawData.length, 'records');
+                }
+                
+                if (data.completedTransfers) {
+                    completedTransfers = data.completedTransfers;
+                    console.log('[REFRESH] Updated completedTransfers with', completedTransfers.length, 'transfers');
+                }
+                
+                // Force complete UI rebuild
+                applyFilters(); // This will rebuild the DFU list
+                
+                // If a DFU was selected, refresh its details
+                if (selectedDFU) {
+                    console.log('[REFRESH] Refreshing details for selected DFU:', selectedDFU);
+                    showDFUDetails(selectedDFU);
+                }
+                
+                console.log('[REFRESH] Complete refresh finished');
+                
+            } catch (error) {
+                console.error('[REFRESH ERROR]', error);
+                showNotification('Failed to refresh data', 'error');
+            }
+        }
+
+        // NEW: Add undo function
+        async function undoTransfer(dfuCode) {
+            if (!currentUser) {
+                showNotification('Please enter your name first', 'error');
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to undo the transfer for DFU ${dfuCode}? This will restore all variants to their original demand values.`)) {
+                return;
+            }
+
+            try {
+                console.log(`[UNDO] Starting undo for DFU ${dfuCode}`);
+                
+                const response = await fetch('/api/undoTransfer', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ dfuCode, userName: currentUser })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to undo transfer');
+                }
+
+                const result = await response.json();
+                console.log('[UNDO] Success:', result);
+
+                // Show success message
+                showNotification(result.message || `Transfer for DFU ${dfuCode} has been undone`, 'success');
+                
+                // Force a complete UI refresh
+                console.log('[UNDO] Forcing complete UI refresh...');
+                
+                // Close any open DFU details
+                if (selectedDFU === dfuCode) {
+                    selectedDFU = null;
+                    const dfuDetailsElement = document.getElementById('dfuDetails');
+                    if (dfuDetailsElement) {
+                        dfuDetailsElement.style.display = 'none';
+                    }
+                }
+                
+                // Refresh the entire interface
+                await refreshData();
+                
+            } catch (error) {
+                console.error('[UNDO ERROR]', error);
+                showNotification(`Failed to undo transfer: ${error.message}`, 'error');
+            }
+        }
+
+        // Placeholder functions for compatibility
+        function applyFilters() {
+            if (appInstance) {
+                appInstance.filterDFUs();
+            }
+        }
+
+        function showDFUDetails(dfuCode) {
+            if (appInstance) {
+                appInstance.selectDFU(dfuCode);
+            }
+        }
         
         function setupFeatures() {
             // Connect WebSocket
@@ -250,10 +367,37 @@
                 }
             });
             
-            socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
+            socket.on('dataUpdated', ({ dfuCode, updatedBy, rawData, completedTransfers, message, forceRefresh }) => {
                 if (updatedBy !== userName) {
-                    showNotification(`${updatedBy} updated DFU ${dfuCode}`, 'info');
-                    loadTeamData();
+                    showNotification(message || `${updatedBy} updated DFU ${dfuCode}`, 'info');
+                    
+                    if (forceRefresh && rawData) {
+                        // Force complete refresh of all data
+                        allRawData = rawData;
+                        
+                        // Update completed transfers
+                        if (completedTransfers) {
+                            // Convert array to object format if needed
+                            if (Array.isArray(completedTransfers)) {
+                                const transfersObj = {};
+                                completedTransfers.forEach(transfer => {
+                                    transfersObj[transfer.dfuCode] = transfer;
+                                });
+                                completedTransfers = transfersObj;
+                            }
+                        }
+                        
+                        // Force complete UI rebuild
+                        console.log('[SOCKET] Forcing complete UI rebuild...');
+                        applyFilters();
+                        
+                        // If a DFU was selected, refresh its details
+                        if (selectedDFU) {
+                            showDFUDetails(selectedDFU);
+                        }
+                    } else {
+                        loadTeamData();
+                    }
                 }
             });
             
@@ -373,56 +517,49 @@
                 }, 500);
             };
             
-            appInstance.undoTransfer = async function(dfuCode) {
-                try {
-                    const response = await fetch('/api/undoTransfer', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ dfuCode, userName })
-                    });
-                    
-                    if (response.ok) {
-                        const result = await response.json();
+            // UPDATED: Enhanced undo transfer with proper data restoration
+                appInstance.undoTransfer = async function(dfuCode) {
+                    try {
+                        console.log(`[CLIENT] Initiating undo for DFU ${dfuCode}`);
                         
-                        // Update with the restored data from server
-                        if (result.restoredData) {
-                            this.rawData = result.restoredData;
-                            this.originalRawData = JSON.parse(JSON.stringify(result.restoredData));
-                            originalRawDataBackup = JSON.parse(JSON.stringify(result.restoredData));
-                        }
-                        
-                        // Clear local transfer state
-                        delete this.completedTransfers[dfuCode];
-                        delete this.transfers[dfuCode];
-                        delete this.bulkTransfers[dfuCode];
-                        delete this.granularTransfers[dfuCode];
-                        delete this.lastExecutionSummary[dfuCode];
-                        
-                        // Update with remaining transfers from server
-                        if (result.remainingTransfers) {
-                            this.completedTransfers = result.remainingTransfers;
-                        }
-                        
-                        // Re-process the data to update the UI
-                        this.multiVariantDFUs = {};
-                        this.filteredDFUs = {};
-                        this.processMultiVariantDFUs(this.rawData);
-                        
-                        showNotification('Transfer undone successfully - all variants restored', 'success');
-                        
-                        preserveScrollPosition(() => {
-                            this.render();
+                        const response = await fetch('/api/undoTransfer', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ dfuCode, userName })
                         });
                         
-                    } else {
-                        const error = await response.json();
-                        showNotification('Failed to undo transfer: ' + (error.error || 'Unknown error'), 'error');
+                        const result = await response.json();
+                        
+                        if (response.ok && result.success) {
+                            console.log('[CLIENT] Undo successful, reloading data...');
+                            
+                            // Clear local transfer state
+                            delete this.completedTransfers[dfuCode];
+                            delete this.transfers[dfuCode];
+                            delete this.bulkTransfers[dfuCode];
+                            delete this.granularTransfers[dfuCode];
+                            delete this.lastExecutionSummary[dfuCode];
+                            
+                            // Update completed transfers from server response
+                            if (result.completedTransfers) {
+                                this.completedTransfers = result.completedTransfers;
+                            }
+                            
+                            showNotification(result.message || 'Transfer undone successfully', 'success');
+                            
+                            // Reload all data from server to ensure consistency
+                            await loadTeamData();
+                            
+                        } else {
+                            const errorMsg = result.error || 'Failed to undo transfer';
+                            showNotification(errorMsg, 'error');
+                            console.error('[CLIENT] Undo failed:', errorMsg);
+                        }
+                    } catch (error) {
+                        showNotification('Failed to undo transfer: ' + error.message, 'error');
+                        console.error('[CLIENT] Undo error:', error);
                     }
-                } catch (error) {
-                    showNotification('Failed to undo transfer', 'error');
-                    console.error('Undo error:', error);
-                }
-            };
+                };
             
             appInstance.exportData = async function() {
                 try {
