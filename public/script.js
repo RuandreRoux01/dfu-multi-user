@@ -1350,6 +1350,11 @@ class DemandTransferApp {
         const dfuStr = this.toComparableString(dfuCode);
         console.log(`Undoing transfer for DFU ${dfuStr}`);
         
+        if (!this.originalRawData || this.originalRawData.length === 0) {
+            this.showNotification('No original data available to restore', 'error');
+            return;
+        }
+        
         // Remove from completed transfers
         delete this.completedTransfers[dfuStr];
         
@@ -1361,9 +1366,24 @@ class DemandTransferApp {
         // Clear execution summary
         delete this.lastExecutionSummary[dfuStr];
         
-        // Restore the original data from backup
+        // Restore the original data from backup - COMPLETE restoration
         console.log('Restoring original data from backup...');
-        this.rawData = JSON.parse(JSON.stringify(this.originalRawData));
+        
+        // Get original DFU records
+        const originalDfuRecords = this.originalRawData.filter(record => 
+            this.toComparableString(record['DFU']) === dfuStr
+        );
+        
+        // Remove all current DFU records from rawData
+        this.rawData = this.rawData.filter(record => 
+            this.toComparableString(record['DFU']) !== dfuStr
+        );
+        
+        // Add back the original DFU records (deep copy to prevent reference issues)
+        const restoredRecords = originalDfuRecords.map(record => ({...record}));
+        this.rawData.push(...restoredRecords);
+        
+        console.log(`Restored ${restoredRecords.length} original records for DFU ${dfuStr}`);
         
         // Force recalculation of multi-variant DFUs
         this.multiVariantDFUs = {};
@@ -1373,7 +1393,17 @@ class DemandTransferApp {
         this.processMultiVariantDFUs(this.rawData);
         
         this.showNotification(`Transfer undone for DFU ${dfuStr}. All original variants and quantities restored.`, 'success');
+        
+        // Force complete UI refresh
+        const currentSelection = this.selectedDFU;
+        this.selectedDFU = null;
         this.render();
+        
+        // Restore selection after UI refresh
+        setTimeout(() => {
+            this.selectedDFU = currentSelection;
+            this.render();
+        }, 100);
     }
     
     async exportData() {
@@ -1511,21 +1541,12 @@ class DemandTransferApp {
         const multiVariantCount = Object.keys(this.filteredDFUs).filter(dfu => !this.filteredDFUs[dfu].isSingleVariant).length;
         
         app.innerHTML = `
-            <div class="max-w-6xl mx-auto p-6 bg-white min-h-screen">
-                <div class="mb-6">
-                    <div class="flex justify-between items-center">
-                        <div>
-                            <h1 class="text-3xl font-bold text-gray-800 mb-2">DFU Demand Transfer Management</h1>
-                            <p class="text-gray-600">
-                                Managing ${totalDFUs} DFUs (${multiVariantCount} with multiple variants, ${totalDFUs - multiVariantCount} single variant)
-                            </p>
-                        </div>
-                        <div class="text-right text-xs text-gray-400">
-                            <p>Version 2.20.0</p>
-                            <p>Build: 2025-12-17-all-dfus</p>
-                        </div>
-                    </div>
-                </div>
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">DFU Demand Transfer Management</h1>
+                <p class="text-gray-600">
+                    Managing ${totalDFUs} DFUs (${multiVariantCount} with multiple variants, ${totalDFUs - multiVariantCount} single variant)
+                </p>
+            </div>
 
                 <div class="flex gap-4 mb-6 flex-responsive">
                     <div class="relative flex-1">
