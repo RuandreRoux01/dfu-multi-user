@@ -100,13 +100,54 @@ async function saveTransfer(dfuCode, transferData, userName) {
 }
 
 // Delete transfer from DB
-async function deleteTransfer(dfuCode) {
-    await db.collection('transfers').deleteOne({
+async function saveTransfer(dfuCode, transferData, userName) {
+    const transferDoc = {
         sessionId: TEAM_SESSION_ID,
-        dfuCode
+        dfuCode,
+        type: transferData.type || 'individual',
+        completedBy: userName,
+        completedAt: new Date()
+    };
+    
+    // Check if this transfer already exists (to preserve original data)
+    const existingTransfer = await db.collection('transfers').findOne({ 
+        sessionId: TEAM_SESSION_ID, 
+        dfuCode 
     });
+    
+    // Store original data ONLY if this is the first transfer for this DFU
+    if (!existingTransfer) {
+        const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        if (session && session.rawData) {
+            const dfuOriginalRecords = session.rawData.filter(r => r['DFU'] === dfuCode);
+            transferDoc.originalData = dfuOriginalRecords;
+            console.log(`[TRANSFER] Storing original data for DFU ${dfuCode}:`, dfuOriginalRecords.length, 'records');
+        }
+    } else {
+        // Preserve existing original data
+        transferDoc.originalData = existingTransfer.originalData;
+    }
+    
+    // Add transfer-specific data
+    if (transferData.bulkTransfer) {
+        transferDoc.bulkTransfer = transferData.bulkTransfer;
+    }
+    if (transferData.granularTransfers) {
+        transferDoc.granularTransfers = transferData.granularTransfers;
+    }
+    if (transferData.transfers) {
+        transferDoc.transfers = transferData.transfers;
+    }
+    if (transferData.targetVariant) {
+        transferDoc.targetVariant = transferData.targetVariant;
+    }
+    
+    await db.collection('transfers').replaceOne(
+        { sessionId: TEAM_SESSION_ID, dfuCode },
+        transferDoc,
+        { upsert: true }
+    );
 }
-
 // API Routes
 app.get('/api/health', (req, res) => {
     res.json({ 
@@ -364,27 +405,69 @@ app.post('/api/undoTransfer', async (req, res) => {
         
         console.log(`[UNDO] ${userName} undoing transfer for DFU ${dfuCode}`);
         
-        // Get the original raw data before any transfers
+        // Get the session data
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        if (!session) {
+            return res.status(400).json({ error: 'No session data found' });
+        }
         
-        // Delete from transfers collection
-        await deleteTransfer(dfuCode);
+        // Get the specific transfer being undone to retrieve original data
+        const transferToUndo = await db.collection('transfers').findOne({ 
+            sessionId: TEAM_SESSION_ID, 
+            dfuCode 
+        });
+        
+        if (!transferToUndo || !transferToUndo.originalData) {
+            return res.status(400).json({ error: 'No original data found for this transfer' });
+        }
+        
+        // Start with current session data
+        let currentData = [...session.rawData];
+        
+        // Remove all current records for this DFU
+        currentData = currentData.filter(r => r['DFU'] !== dfuCode);
+        
+        // Add back the original records for this DFU (before any transfers)
+        currentData = [...currentData, ...transferToUndo.originalData];
+        
+        // Update the session with restored data
+        await db.collection('sessions').updateOne(
+            { _id: TEAM_SESSION_ID },
+            { 
+                $set: { 
+                    rawData: currentData,
+                    lastModified: new Date()
+                }
+            }
+        );
+        
+        // Delete the transfer record
+        await db.collection('transfers').deleteOne({ 
+            sessionId: TEAM_SESSION_ID, 
+            dfuCode 
+        });
         
         // Get all remaining transfers
-        const remainingTransfers = await getCompletedTransfers();
+        const remainingTransfers = await db.collection('transfers').find({ 
+            sessionId: TEAM_SESSION_ID 
+        }).toArray();
         
-        res.json({ success: true, remainingTransfers });
+        res.json({ 
+            success: true, 
+            remainingTransfers,
+            message: `Transfer for DFU ${dfuCode} has been undone - all variants restored to original state`
+        });
         
-        // Notify all users with updated transfer list
-        io.emit('transferUndone', { 
-            dfuCode, 
-            undoneBy: userName,
-            remainingTransfers 
+        // Notify all users of the update
+        io.emit('dataUpdated', { 
+            rawData: currentData, 
+            completedTransfers: remainingTransfers,
+            message: `${userName} undid transfer for DFU ${dfuCode}`
         });
         
     } catch (error) {
-        console.error('[UNDO] Error:', error);
-        res.status(500).json({ error: error.message });
+        console.error('[UNDO ERROR]', error);
+        res.status(500).json({ error: 'Failed to undo transfer' });
     }
 });
 
