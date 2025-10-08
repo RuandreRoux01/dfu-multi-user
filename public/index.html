@@ -417,6 +417,7 @@
             
             appInstance.exportData = async function() {
                 try {
+                    // Helper function to calculate date from week number
                     function getDateFromWeekNumber(year, weekNumber) {
                         const jan1 = new Date(year, 0, 1);
                         const jan1Day = jan1.getDay();
@@ -430,11 +431,22 @@
                     const formattedData = this.rawData.map(record => {
                         const formatted = { ...record };
                         
+                        // Fix Calendar.week based on Week Number
                         if (formatted['Week Number']) {
-                            const weekNum = parseInt(formatted['Week Number']);
+                            const weekNumberStr = String(formatted['Week Number']);
                             
-                            if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
-                                let year = 2025;
+                            // Extract week and year from format like "2_2026" or just "2"
+                            let weekNum, year;
+                            
+                            if (weekNumberStr.includes('_')) {
+                                // Format: "2_2026"
+                                const parts = weekNumberStr.split('_');
+                                weekNum = parseInt(parts[0]);
+                                year = parseInt(parts[1]);
+                            } else {
+                                // Format: just "2" - try to get year from existing Calendar.week
+                                weekNum = parseInt(weekNumberStr);
+                                year = 2025; // Default fallback
                                 
                                 if (formatted['Calendar.week']) {
                                     const existingDate = new Date(formatted['Calendar.week']);
@@ -442,7 +454,9 @@
                                         year = existingDate.getFullYear();
                                     }
                                 }
-                                
+                            }
+                            
+                            if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52 && !isNaN(year)) {
                                 const targetDate = getDateFromWeekNumber(year, weekNum);
                                 formatted['Calendar.week'] = targetDate.toISOString().split('T')[0];
                             }

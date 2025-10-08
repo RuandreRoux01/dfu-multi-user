@@ -1414,11 +1414,20 @@ class DemandTransferApp {
                 
                 // Fix Calendar.week date based on Week Number
                 if (formattedRecord['Week Number']) {
-                    const weekNum = parseInt(formattedRecord['Week Number']);
+                    const weekNumberStr = String(formattedRecord['Week Number']);
                     
-                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52) {
-                        // Determine the year - check if Calendar.week has a valid year
-                        let year = 2025; // Default year
+                    // Extract week and year from format like "2_2026" or just "2"
+                    let weekNum, year;
+                    
+                    if (weekNumberStr.includes('_')) {
+                        // Format: "2_2026"
+                        const parts = weekNumberStr.split('_');
+                        weekNum = parseInt(parts[0]);
+                        year = parseInt(parts[1]);
+                    } else {
+                        // Format: just "2" - try to get year from existing Calendar.week
+                        weekNum = parseInt(weekNumberStr);
+                        year = 2025; // Default fallback
                         
                         if (formattedRecord['Calendar.week']) {
                             const existingDate = new Date(formattedRecord['Calendar.week']);
@@ -1426,15 +1435,9 @@ class DemandTransferApp {
                                 year = existingDate.getFullYear();
                             }
                         }
-                        
-                        // Extract year from WeekCountYear if it exists (format: W1_2026)
-                        if (formattedRecord['WeekCountYear']) {
-                            const weekYearMatch = String(formattedRecord['WeekCountYear']).match(/_(\d{4})/);
-                            if (weekYearMatch) {
-                                year = parseInt(weekYearMatch[1]);
-                            }
-                        }
-                        
+                    }
+                    
+                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52 && !isNaN(year)) {
                         const date = this.getDateFromWeekNumber(year, weekNum);
                         
                         // Format as YYYY-MM-DD
