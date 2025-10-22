@@ -1,11 +1,11 @@
 // DFU Demand Transfer Management Application
-// Version: 2.21.0 - Build: 2025-10-22-soh-integration
-// Added SOH (Stock on Hand) display from Stock RRP4 file
+// Version: 2.22.0 - Build: 2025-10-22-supply-chain-metrics
+// Added SOH, Open Supply, and Stock in Transit display with totals
 
 class DemandTransferApp {
     constructor() {
         this.rawData = [];
-        this.originalRawData = []; // Backup of original data for undo functionality
+        this.originalRawData = [];
         this.multiVariantDFUs = {};
         this.filteredDFUs = {};
         this.selectedDFU = null;
@@ -14,37 +14,41 @@ class DemandTransferApp {
         this.selectedProductionLine = '';
         this.availablePlantLocations = [];
         this.availableProductionLines = [];
-        this.transfers = {}; // Format: { dfuCode: { sourceVariant: targetVariant } }
-        this.bulkTransfers = {}; // Format: { dfuCode: targetVariant }
-        this.granularTransfers = {}; // Format: { dfuCode: { sourceVariant: { targetVariant: { weekKey: { selected: boolean, customQuantity: number } } } } }
-        this.completedTransfers = {}; // Format: { dfuCode: { type: 'bulk'|'individual', targetVariant, timestamp } }
+        this.transfers = {};
+        this.bulkTransfers = {};
+        this.granularTransfers = {};
+        this.completedTransfers = {};
         this.isProcessed = false;
         this.isLoading = false;
-        this.lastExecutionSummary = {}; // Store last execution summary for display
-        this.variantCycleDates = {}; // Store SOS/EOS data: { dfuCode: { partCode: { sos: date, eos: date } } }
-        this.hasVariantCycleData = false; // Flag to check if cycle data is loaded
-        this.keepZeroVariants = true; // Flag to keep variants with 0 demand visible
-        this.searchDebounceTimer = null; // Debounce timer for search input
-        this.stockData = {}; // Format: { productNumber: totalStock }
-        this.hasStockData = false; // Flag to check if stock data is loaded
+        this.lastExecutionSummary = {};
+        this.variantCycleDates = {};
+        this.hasVariantCycleData = false;
+        this.keepZeroVariants = true;
+        this.searchDebounceTimer = null;
+        
+        // Supply chain data
+        this.stockData = {}; // SOH: { productNumber: totalStock }
+        this.hasStockData = false;
+        this.openSupplyData = {}; // Open Supply: { productNumber: totalQuantity }
+        this.hasOpenSupplyData = false;
+        this.stockInTransitData = {}; // Stock in Transit: { productNumber: totalQuantity }
+        this.hasStockInTransitData = false;
         
         this.init();
     }
     
     init() {
-        console.log('🚀 DFU Demand Transfer App v2.21.0 - Build: 2025-10-22-soh-integration');
-        console.log('📋 Added SOH display from Stock RRP4 file');
+        console.log('🚀 DFU Demand Transfer App v2.22.0 - Build: 2025-10-22-supply-chain-metrics');
+        console.log('📋 Added SOH, Open Supply, and Stock in Transit with totals');
         this.render();
         this.attachEventListeners();
     }
     
-    // Helper method to ensure consistent string comparison
     toComparableString(value) {
         if (value === null || value === undefined) return '';
         return String(value).trim();
     }
     
-    // Helper function to get date from week number
     getDateFromWeekNumber(year, weekNumber) {
         const jan1 = new Date(year, 0, 1);
         const jan1DayOfWeek = jan1.getDay();
@@ -92,6 +96,160 @@ class DemandTransferApp {
         return container;
     }
 
+    async handleStockFile(file) {
+        console.log('Processing Stock RRP4 file...');
+        this.isLoading = true;
+        this.render();
+        
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer, { 
+                cellStyles: true, 
+                cellFormulas: true, 
+                cellDates: true,
+                cellNF: true,
+                sheetStubs: true
+            });
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            console.log(`Loaded ${jsonData.length} stock records`);
+            
+            this.stockData = {};
+            
+            jsonData.forEach(record => {
+                const productNumber = this.toComparableString(record['Product Number']);
+                const stock = parseFloat(record['Stock']) || 0;
+                
+                if (productNumber) {
+                    if (!this.stockData[productNumber]) {
+                        this.stockData[productNumber] = 0;
+                    }
+                    this.stockData[productNumber] += stock;
+                }
+            });
+            
+            console.log(`Aggregated stock for ${Object.keys(this.stockData).length} unique product numbers`);
+            this.hasStockData = true;
+            this.showNotification('Stock (SOH) data loaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error processing stock file:', error);
+            this.showNotification('Error loading stock file: ' + error.message, 'error');
+            this.hasStockData = false;
+        } finally {
+            this.isLoading = false;
+            this.render();
+        }
+    }
+
+    async handleOpenSupplyFile(file) {
+        console.log('Processing Production RRP4 (Open Supply) file...');
+        this.isLoading = true;
+        this.render();
+        
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer, { 
+                cellStyles: true, 
+                cellFormulas: true, 
+                cellDates: true,
+                cellNF: true,
+                sheetStubs: true
+            });
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            console.log(`Loaded ${jsonData.length} open supply records`);
+            
+            this.openSupplyData = {};
+            
+            jsonData.forEach(record => {
+                const productNumber = this.toComparableString(record['Product Number']);
+                const quantity = parseFloat(record['Receipt Quantity / Requirements Quantity']) || 0;
+                
+                if (productNumber) {
+                    if (!this.openSupplyData[productNumber]) {
+                        this.openSupplyData[productNumber] = 0;
+                    }
+                    this.openSupplyData[productNumber] += quantity;
+                }
+            });
+            
+            console.log(`Aggregated open supply for ${Object.keys(this.openSupplyData).length} unique product numbers`);
+            this.hasOpenSupplyData = true;
+            this.showNotification('Open Supply data loaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error processing open supply file:', error);
+            this.showNotification('Error loading open supply file: ' + error.message, 'error');
+            this.hasOpenSupplyData = false;
+        } finally {
+            this.isLoading = false;
+            this.render();
+        }
+    }
+
+    async handleStockInTransitFile(file) {
+        console.log('Processing Transport Receipts (Stock in Transit) file...');
+        this.isLoading = true;
+        this.render();
+        
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer, { 
+                cellStyles: true, 
+                cellFormulas: true, 
+                cellDates: true,
+                cellNF: true,
+                sheetStubs: true
+            });
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            console.log(`Loaded ${jsonData.length} stock in transit records`);
+            
+            this.stockInTransitData = {};
+            
+            jsonData.forEach(record => {
+                const productNumber = this.toComparableString(record['PartCode']);
+                const quantity = parseFloat(record['SupplierOrderQuantityOrdered']) || 0;
+                
+                if (productNumber) {
+                    if (!this.stockInTransitData[productNumber]) {
+                        this.stockInTransitData[productNumber] = 0;
+                    }
+                    this.stockInTransitData[productNumber] += quantity;
+                }
+            });
+            
+            console.log(`Aggregated stock in transit for ${Object.keys(this.stockInTransitData).length} unique product numbers`);
+            this.hasStockInTransitData = true;
+            this.showNotification('Stock in Transit data loaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error processing stock in transit file:', error);
+            this.showNotification('Error loading stock in transit file: ' + error.message, 'error');
+            this.hasStockInTransitData = false;
+        } finally {
+            this.isLoading = false;
+            this.render();
+        }
+    }
+
+    calculateTotal(variant) {
+        const soh = this.stockData[variant] || 0;
+        const openSupply = this.openSupplyData[variant] || 0;
+        const inTransit = this.stockInTransitData[variant] || 0;
+        return soh + openSupply + inTransit;
+    }
+
     async loadVariantCycleData(file) {
         console.log('Loading variant cycle data...');
         this.isLoading = true;
@@ -131,23 +289,19 @@ class DemandTransferApp {
     processCycleData(data) {
         console.log('Processing cycle data...');
         
-        // Clear existing cycle data
         this.variantCycleDates = {};
         
-        // Expected column names (adjust if your file has different column names)
         const dfuColumn = 'DFU';
         const partCodeColumn = 'Part Code';
         const sosColumn = 'SOS';
         const eosColumn = 'EOS';
         const commentsColumn = 'Comments';
         
-        // Check if columns exist
         if (data.length > 0) {
             const sampleRecord = data[0];
             const columns = Object.keys(sampleRecord);
             console.log('Cycle data columns:', columns);
             
-            // Find actual column names (case-insensitive and flexible matching)
             const actualDfuColumn = columns.find(col => col.toUpperCase() === 'DFU') || dfuColumn;
             const actualPartCodeColumn = columns.find(col => 
                 col.toUpperCase().includes('PART') || 
@@ -166,7 +320,6 @@ class DemandTransferApp {
                 comments: actualCommentsColumn
             });
             
-            // Process each record
             let processedCount = 0;
             data.forEach(record => {
                 const dfuCode = record[actualDfuColumn];
@@ -176,7 +329,6 @@ class DemandTransferApp {
                 const comments = record[actualCommentsColumn];
                 
                 if (dfuCode && partCode) {
-                    // Ensure both are strings for consistent comparison
                     const dfuStr = this.toComparableString(dfuCode);
                     const partStr = this.toComparableString(partCode);
                     
@@ -194,13 +346,10 @@ class DemandTransferApp {
             });
             
             console.log(`Processed ${processedCount} cycle data records`);
-            console.log('Cycle data for DFUs:', Object.keys(this.variantCycleDates).length);
-            console.log('Sample cycle data:', this.variantCycleDates);
         }
     }
     
     getCycleDataForVariant(dfuCode, partCode) {
-        // Ensure both are strings for consistent comparison
         const dfuStr = this.toComparableString(dfuCode);
         const partStr = this.toComparableString(partCode);
         
@@ -226,57 +375,6 @@ class DemandTransferApp {
         
         this.loadData(file);
     }
-
-    async handleStockFile(file) {
-        console.log('Processing Stock RRP4 file...');
-        this.isLoading = true;
-        this.render();
-        
-        try {
-            const arrayBuffer = await file.arrayBuffer();
-            const workbook = XLSX.read(arrayBuffer, { 
-                cellStyles: true, 
-                cellFormulas: true, 
-                cellDates: true,
-                cellNF: true,
-                sheetStubs: true
-            });
-            
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            const jsonData = XLSX.utils.sheet_to_json(worksheet);
-            
-            console.log(`Loaded ${jsonData.length} stock records`);
-            
-            // Clear existing stock data
-            this.stockData = {};
-            
-            // Process and aggregate stock by Product Number
-            jsonData.forEach(record => {
-                const productNumber = this.toComparableString(record['Product Number']);
-                const stock = parseFloat(record['Stock']) || 0;
-                
-                if (productNumber) {
-                    if (!this.stockData[productNumber]) {
-                        this.stockData[productNumber] = 0;
-                    }
-                    this.stockData[productNumber] += stock;
-                }
-            });
-            
-            console.log(`Aggregated stock for ${Object.keys(this.stockData).length} unique product numbers`);
-            this.hasStockData = true;
-            this.showNotification('Stock data loaded successfully!', 'success');
-            
-        } catch (error) {
-            console.error('Error processing stock file:', error);
-            this.showNotification('Error loading stock file. Please check the file format.', 'error');
-            this.hasStockData = false;
-        } finally {
-            this.isLoading = false;
-            this.render();
-        }
-    }
     
     async loadData(file) {
         console.log('Starting to load data...');
@@ -297,10 +395,8 @@ class DemandTransferApp {
             
             console.log('Available sheets:', workbook.SheetNames);
             
-            // Updated sheet name detection for new format
             let sheetName = 'Total Demand';
             if (!workbook.Sheets[sheetName]) {
-                // Try other common sheet names
                 const possibleNames = ['Open Fcst', 'Demand', 'Sheet1'];
                 sheetName = possibleNames.find(name => workbook.Sheets[name]) || workbook.SheetNames[0];
                 console.log('Using sheet:', sheetName);
@@ -316,15 +412,7 @@ class DemandTransferApp {
                 console.log('Sample record:', data[0]);
                 console.log('Available columns:', Object.keys(data[0]));
                 
-                // Log data types for debugging
-                const sampleRow = data[0];
-                console.log('Data types in first row:');
-                Object.keys(sampleRow).forEach(key => {
-                    console.log(`  ${key}: ${typeof sampleRow[key]} (${sampleRow[key]})`);
-                });
-                
                 this.rawData = data;
-                // Create a deep copy of the original data for undo functionality
                 this.originalRawData = JSON.parse(JSON.stringify(data));
                 this.processMultiVariantDFUs(data);
                 this.isProcessed = true;
@@ -354,9 +442,6 @@ class DemandTransferApp {
         console.log('Sample record:', sampleRecord);
         console.log('Available columns:', Object.keys(sampleRecord));
         
-        const columns = Object.keys(sampleRecord);
-        
-        // Updated column mapping for new file format
         const dfuColumn = 'DFU';
         const partNumberColumn = 'Product Number';
         const demandColumn = 'weekly fcst';
@@ -367,47 +452,24 @@ class DemandTransferApp {
         const sourceLocationColumn = 'Source Location';
         const weekNumberColumn = 'Week Number';
         
-        console.log('Using columns:', {
-            dfuColumn,
-            partNumberColumn,
-            demandColumn,
-            plantLocationColumn,
-            productionLineColumn,
-            partDescriptionColumn
-        });
-        
-        // Get unique plant locations and production lines for filter
         this.availablePlantLocations = [...new Set(data.map(r => this.toComparableString(r[plantLocationColumn])))].filter(Boolean).sort();
         this.availableProductionLines = [...new Set(data.map(r => this.toComparableString(r[productionLineColumn])))].filter(Boolean).sort();
         
-        console.log('Available plant locations:', this.availablePlantLocations.length);
-        console.log('Available production lines:', this.availableProductionLines.length);
-        
-        // Filter data if filters are applied
         let filteredData = data;
         
         if (this.selectedPlantLocation) {
             filteredData = filteredData.filter(record => 
                 this.toComparableString(record[plantLocationColumn]) === this.selectedPlantLocation
             );
-            console.log('Filtered by plant location:', this.selectedPlantLocation, '- Records:', filteredData.length);
         }
         
         if (this.selectedProductionLine) {
             filteredData = filteredData.filter(record => 
                 this.toComparableString(record[productionLineColumn]) === this.selectedProductionLine
             );
-            console.log('Filtered by production line:', this.selectedProductionLine, '- Records:', filteredData.length);
         }
         
-        // Group records by DFU
         const groupedByDFU = {};
-        
-        console.log('Filters applied - Plant:', this.selectedPlantLocation || 'All', 'Line:', this.selectedProductionLine || 'All');
-        
-        if ((this.selectedPlantLocation || this.selectedProductionLine) && filteredData.length === 0) {
-            console.warn('No records found for current filter combination');
-        }
         
         filteredData.forEach(record => {
             const dfuCode = this.toComparableString(record[dfuColumn]);
@@ -419,42 +481,29 @@ class DemandTransferApp {
             }
         });
 
-        console.log('Grouped by DFU:', Object.keys(groupedByDFU).length, 'unique DFUs');
-
         const allDFUs = {};
-        let totalDFUCount = 0;
         
         Object.keys(groupedByDFU).forEach(dfuCode => {
             const records = groupedByDFU[dfuCode];
             
-            // Get unique part codes, ensuring we treat them as strings for consistency
             const uniquePartCodes = [...new Set(records.map(r => this.toComparableString(r[partNumberColumn])))].filter(Boolean);
-            
-            // Get unique plants and production lines for this DFU
             const uniquePlants = [...new Set(records.map(r => this.toComparableString(r[plantLocationColumn])))].filter(Boolean);
             const uniqueProductionLines = [...new Set(records.map(r => this.toComparableString(r[productionLineColumn])))].filter(Boolean);
             
-            // Check if this DFU has completed transfers
             const isCompleted = this.completedTransfers[dfuCode];
             
-            // Include ALL DFUs now, not just multi-variant
-            totalDFUCount++;
             const variantDemand = {};
             
             uniquePartCodes.forEach(partCode => {
-                // Filter records for this part code, ensuring string comparison
                 const partCodeRecords = records.filter(r => this.toComparableString(r[partNumberColumn]) === partCode);
                 
-                // Sum up all demand for this variant across all records
                 const totalDemand = partCodeRecords.reduce((sum, r) => {
                     const demand = parseFloat(r[demandColumn]) || 0;
                     return sum + demand;
                 }, 0);
                 
-                // Get part description from the first record
                 const partDescription = partCodeRecords[0] ? partCodeRecords[0][partDescriptionColumn] : '';
                 
-                // Group records by week for granular control
                 const weeklyRecords = {};
                 partCodeRecords.forEach(record => {
                     const weekNum = this.toComparableString(record[weekNumberColumn]);
@@ -485,7 +534,6 @@ class DemandTransferApp {
             
             const activeVariants = Object.keys(variantDemand);
             
-            // Include ALL DFUs
             allDFUs[dfuCode] = {
                 variants: activeVariants,
                 variantDemand,
@@ -507,11 +555,6 @@ class DemandTransferApp {
                 productionLine: records[0] ? this.toComparableString(records[0][productionLineColumn]) : null
             };
         });
-        
-        console.log('All DFUs count:', totalDFUCount);
-        console.log('Multi-variant DFUs:', Object.values(allDFUs).filter(d => d.variants.length > 1).length);
-        console.log('Single-variant DFUs:', Object.values(allDFUs).filter(d => d.variants.length === 1).length);
-        console.log('Completed transfers:', Object.keys(this.completedTransfers).length);
         
         this.multiVariantDFUs = allDFUs;
         this.filterDFUs();
@@ -611,11 +654,33 @@ class DemandTransferApp {
                                     </div>
                                     
                                     <div class="border-t pt-4 mt-4">
-                                        <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Upload Stock RRP4</h3>
-                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="stockFileInput">
-                                        <p class="text-xs text-gray-500 mt-1">
-                                            ${this.hasStockData ? '✓ Stock Data Loaded - ' : ''}Upload file with Product Number and Stock columns
-                                        </p>
+                                        <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Upload Supply Chain Files</h3>
+                                        
+                                        <div class="space-y-3">
+                                            <div>
+                                                <label class="text-xs font-medium text-gray-600">Stock RRP4 (SOH)</label>
+                                                <input type="file" accept=".xlsx,.xls" class="file-input" id="stockFileInput">
+                                                <p class="text-xs text-gray-500 mt-1">
+                                                    ${this.hasStockData ? '✓ SOH Data Loaded' : 'Upload file with Product Number and Stock columns'}
+                                                </p>
+                                            </div>
+                                            
+                                            <div>
+                                                <label class="text-xs font-medium text-gray-600">Production RRP4 (Open Supply)</label>
+                                                <input type="file" accept=".xlsx,.xls" class="file-input" id="openSupplyFileInput">
+                                                <p class="text-xs text-gray-500 mt-1">
+                                                    ${this.hasOpenSupplyData ? '✓ Open Supply Data Loaded' : 'Upload file with Product Number and Receipt Quantity columns'}
+                                                </p>
+                                            </div>
+                                            
+                                            <div>
+                                                <label class="text-xs font-medium text-gray-600">Transport Receipts (Stock in Transit)</label>
+                                                <input type="file" accept=".xlsx,.xls" class="file-input" id="stockInTransitFileInput">
+                                                <p class="text-xs text-gray-500 mt-1">
+                                                    ${this.hasStockInTransitData ? '✓ Stock in Transit Data Loaded' : 'Upload file with PartCode and SupplierOrderQuantityOrdered columns'}
+                                                </p>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             `}
@@ -632,9 +697,7 @@ class DemandTransferApp {
                 if (cycleFileInput) {
                     cycleFileInput.addEventListener('change', (e) => {
                         const file = e.target.files[0];
-                        if (file) {
-                            this.loadVariantCycleData(file);
-                        }
+                        if (file) this.loadVariantCycleData(file);
                     });
                 }
                 
@@ -642,9 +705,23 @@ class DemandTransferApp {
                 if (stockFileInput) {
                     stockFileInput.addEventListener('change', (e) => {
                         const file = e.target.files[0];
-                        if (file) {
-                            this.handleStockFile(file);
-                        }
+                        if (file) this.handleStockFile(file);
+                    });
+                }
+                
+                const openSupplyFileInput = document.getElementById('openSupplyFileInput');
+                if (openSupplyFileInput) {
+                    openSupplyFileInput.addEventListener('change', (e) => {
+                        const file = e.target.files[0];
+                        if (file) this.handleOpenSupplyFile(file);
+                    });
+                }
+                
+                const stockInTransitFileInput = document.getElementById('stockInTransitFileInput');
+                if (stockInTransitFileInput) {
+                    stockInTransitFileInput.addEventListener('change', (e) => {
+                        const file = e.target.files[0];
+                        if (file) this.handleStockInTransitFile(file);
                     });
                 }
             }
@@ -771,6 +848,8 @@ class DemandTransferApp {
                 </div>
             `;
         }
+
+        const hasSupplyChainData = this.hasStockData || this.hasOpenSupplyData || this.hasStockInTransitData;
         
         return `
             <div>
@@ -805,10 +884,14 @@ class DemandTransferApp {
                         <div class="space-y-3">
                             ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
                                 const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
+                                const soh = this.stockData[variant] || 0;
+                                const openSupply = this.openSupplyData[variant] || 0;
+                                const inTransit = this.stockInTransitData[variant] || 0;
+                                const total = soh + openSupply + inTransit;
                                 
                                 return `
                                     <div class="border rounded-lg p-3 bg-white">
-                                        <div class="flex justify-between items-center">
+                                        <div class="flex justify-between items-start">
                                             <div class="flex-1">
                                                 <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
                                                 <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
@@ -817,9 +900,31 @@ class DemandTransferApp {
                                             <div class="text-right">
                                                 <p class="font-medium text-gray-800">${this.formatNumber(demandData?.totalDemand || 0)}</p>
                                                 <p class="text-sm text-gray-600">consolidated demand</p>
-                                                ${this.hasStockData ? `
-                                                    <p class="font-medium text-blue-600 mt-2">${this.formatNumber(this.stockData[variant] || 0)}</p>
-                                                    <p class="text-xs text-blue-600">SOH</p>
+                                                ${hasSupplyChainData ? `
+                                                    <div class="mt-3 pt-3 border-t space-y-1">
+                                                        ${this.hasStockData ? `
+                                                            <div class="flex justify-between text-xs">
+                                                                <span class="text-blue-600">SOH:</span>
+                                                                <span class="font-medium text-blue-600">${this.formatNumber(soh)}</span>
+                                                            </div>
+                                                        ` : ''}
+                                                        ${this.hasOpenSupplyData ? `
+                                                            <div class="flex justify-between text-xs">
+                                                                <span class="text-green-600">Open Supply:</span>
+                                                                <span class="font-medium text-green-600">${this.formatNumber(openSupply)}</span>
+                                                            </div>
+                                                        ` : ''}
+                                                        ${this.hasStockInTransitData ? `
+                                                            <div class="flex justify-between text-xs">
+                                                                <span class="text-purple-600">In Transit:</span>
+                                                                <span class="font-medium text-purple-600">${this.formatNumber(inTransit)}</span>
+                                                            </div>
+                                                        ` : ''}
+                                                        <div class="flex justify-between text-sm font-semibold pt-1 border-t">
+                                                            <span class="text-gray-800">Total:</span>
+                                                            <span class="text-gray-800">${this.formatNumber(total)}</span>
+                                                        </div>
+                                                    </div>
                                                 ` : ''}
                                             </div>
                                         </div>
@@ -897,6 +1002,8 @@ class DemandTransferApp {
     
     renderIndividualTransferSection() {
         if (!this.selectedDFU || !this.multiVariantDFUs[this.selectedDFU]) return '';
+
+        const hasSupplyChainData = this.hasStockData || this.hasOpenSupplyData || this.hasStockInTransitData;
         
         return `
             <div class="mb-6">
@@ -905,6 +1012,10 @@ class DemandTransferApp {
                     ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
                         const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
                         const currentTransfer = this.transfers[this.selectedDFU]?.[variant];
+                        const soh = this.stockData[variant] || 0;
+                        const openSupply = this.openSupplyData[variant] || 0;
+                        const inTransit = this.stockInTransitData[variant] || 0;
+                        const total = soh + openSupply + inTransit;
                         
                         return `
                             <div class="border rounded-lg p-4 bg-gray-50">
@@ -912,12 +1023,22 @@ class DemandTransferApp {
                                     <div class="flex-1">
                                         <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
                                         <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
-                                        <p class="text-sm text-gray-600">${demandData?.recordCount || 0} records • ${this.formatNumber(demandData?.totalDemand || 0)} total demand${this.hasStockData ? ` • SOH: ${this.formatNumber(this.stockData[variant] || 0)}` : ''}</p>
+                                        <p class="text-sm text-gray-600">
+                                            ${demandData?.recordCount || 0} records • ${this.formatNumber(demandData?.totalDemand || 0)} total demand
+                                        </p>
+                                        ${hasSupplyChainData ? `
+                                            <div class="mt-2 text-xs space-y-0.5">
+                                                ${this.hasStockData ? `<p class="text-blue-600">SOH: ${this.formatNumber(soh)}</p>` : ''}
+                                                ${this.hasOpenSupplyData ? `<p class="text-green-600">Open Supply: ${this.formatNumber(openSupply)}</p>` : ''}
+                                                ${this.hasStockInTransitData ? `<p class="text-purple-600">In Transit: ${this.formatNumber(inTransit)}</p>` : ''}
+                                                <p class="font-semibold text-gray-800">Total: ${this.formatNumber(total)}</p>
+                                            </div>
+                                        ` : ''}
                                         ${(() => {
                                             const cycleData = this.getCycleDataForVariant(this.selectedDFU, variant);
                                             if (cycleData) {
                                                 return `
-                                                    <div class="mt-1 text-xs space-y-0.5">
+                                                    <div class="mt-2 text-xs space-y-0.5 pt-2 border-t">
                                                         <p class="text-blue-600"><strong>SOS:</strong> ${cycleData.sos}</p>
                                                         <p class="text-red-600"><strong>EOS:</strong> ${cycleData.eos}</p>
                                                         ${cycleData.comments ? `<p class="text-gray-600"><strong>Comments:</strong> ${cycleData.comments}</p>` : ''}
@@ -957,7 +1078,6 @@ class DemandTransferApp {
                              this.bulkTransfers[this.selectedDFU] || 
                              (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
         
-        // Check if we have a recent execution summary to show
         const hasExecutionSummary = this.lastExecutionSummary[this.selectedDFU];
         
         if (hasTransfers) {
@@ -1054,8 +1174,6 @@ class DemandTransferApp {
     
     ensureGranularContainers() {
         if (this.selectedDFU && this.multiVariantDFUs[this.selectedDFU]) {
-            console.log('=== FORCE CREATING GRANULAR CONTAINERS ===');
-            
             this.multiVariantDFUs[this.selectedDFU].variants.forEach(variant => {
                 const selectElement = document.querySelector(`[data-source-variant="${variant}"]`);
                 
@@ -1066,16 +1184,12 @@ class DemandTransferApp {
                         let granularContainer = document.getElementById(`granular-${variant}`);
                         
                         if (!granularContainer) {
-                            console.log(`Creating missing granular container for ${variant}`);
-                            
                             granularContainer = document.createElement('div');
                             granularContainer.id = `granular-${variant}`;
                             granularContainer.className = 'border-t pt-3 mt-3 granular-section';
                             granularContainer.style.minHeight = '10px';
                             
                             parentDiv.appendChild(granularContainer);
-                            
-                            console.log(`✓ Created granular-${variant}`);
                         }
                     }
                 }
@@ -1152,6 +1266,28 @@ class DemandTransferApp {
                 }
             });
         }
+
+        const openSupplyFileInput = document.getElementById('openSupplyFileInput');
+        if (openSupplyFileInput) {
+            openSupplyFileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    console.log('Open Supply file selected:', file.name);
+                    this.handleOpenSupplyFile(file);
+                }
+            });
+        }
+
+        const stockInTransitFileInput = document.getElementById('stockInTransitFileInput');
+        if (stockInTransitFileInput) {
+            stockInTransitFileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    console.log('Stock in Transit file selected:', file.name);
+                    this.handleStockInTransitFile(file);
+                }
+            });
+        }
         
         // DFU card click handlers
         document.querySelectorAll('.dfu-card').forEach(card => {
@@ -1175,20 +1311,16 @@ class DemandTransferApp {
                 const sourceVariant = e.target.dataset.sourceVariant;
                 const targetVariant = e.target.value;
                 
-                console.log(`Dropdown changed: ${sourceVariant} → ${targetVariant}`);
-                
                 if (targetVariant && targetVariant !== sourceVariant) {
                     this.setIndividualTransfer(this.selectedDFU, sourceVariant, targetVariant);
                     
                     const granularSection = document.getElementById(`granular-${sourceVariant}`);
-                    console.log(`Looking for granular section: granular-${sourceVariant}`, granularSection);
                     
                     if (granularSection) {
                         granularSection.innerHTML = this.renderGranularSection(sourceVariant, targetVariant);
                         this.attachGranularEventListeners();
                     }
                 } else if (!targetVariant) {
-                    // Clear the transfer if dropdown is set to empty
                     this.setIndividualTransfer(this.selectedDFU, sourceVariant, '');
                 }
             });
@@ -1196,45 +1328,32 @@ class DemandTransferApp {
         
         this.attachGranularEventListeners();
         
-        // Restore focus on search input after re-render
         setTimeout(() => {
             const searchInput = document.getElementById('searchInput');
             if (searchInput && document.activeElement !== searchInput && this.searchTerm) {
                 searchInput.focus();
-                // Move cursor to end of input
                 searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
             }
         }, 10);
     }
     
     filterByPlantLocation(plantLocation) {
-        console.log('Filtering by plant location:', plantLocation);
         this.selectedPlantLocation = plantLocation;
-        
-        // Clear existing data and re-process with filter
         this.multiVariantDFUs = {};
         this.filteredDFUs = {};
-        
-        // Re-process data with the new filters
         this.processMultiVariantDFUs(this.rawData);
         this.render();
     }
     
     filterByProductionLine(productionLine) {
-        console.log('Filtering by production line:', productionLine);
         this.selectedProductionLine = productionLine;
-        
-        // Clear existing data and re-process with filter
         this.multiVariantDFUs = {};
         this.filteredDFUs = {};
-        
-        // Re-process data with the new filters
         this.processMultiVariantDFUs(this.rawData);
         this.render();
     }
     
     selectDFU(dfuCode) {
-        // Ensure consistent type
         this.selectedDFU = this.toComparableString(dfuCode);
         this.render();
     }
@@ -1244,7 +1363,6 @@ class DemandTransferApp {
         const targetStr = this.toComparableString(targetVariant);
         
         this.bulkTransfers[dfuStr] = targetStr;
-        // Clear individual transfers when bulk transfer is selected
         this.transfers[dfuStr] = {};
         this.render();
     }
@@ -1259,12 +1377,10 @@ class DemandTransferApp {
         }
         this.transfers[dfuStr][sourceStr] = targetStr;
         
-        // Clear granular transfers when setting individual transfer
         if (this.granularTransfers[dfuStr] && this.granularTransfers[dfuStr][sourceStr]) {
             delete this.granularTransfers[dfuStr][sourceStr];
         }
         
-        // Don't render immediately - let the caller handle it to preserve scroll
         if (targetVariant === '') {
             this.render();
         }
@@ -1285,23 +1401,20 @@ class DemandTransferApp {
             this.granularTransfers[dfuStr][sourceStr][targetStr] = {};
         }
         
-        // Toggle selection
         const current = this.granularTransfers[dfuStr][sourceStr][targetStr][weekKey];
         if (current && current.selected) {
             delete this.granularTransfers[dfuStr][sourceStr][targetStr][weekKey];
         } else {
             this.granularTransfers[dfuStr][sourceStr][targetStr][weekKey] = {
                 selected: true,
-                customQuantity: null // null means use full quantity
+                customQuantity: null
             };
         }
         
-        // Clear individual transfer when granular is used
         if (this.transfers[dfuStr] && this.transfers[dfuStr][sourceStr]) {
             delete this.transfers[dfuStr][sourceStr];
         }
         
-        // Update UI without full re-render to preserve scroll position
         this.updateActionButtonsOnly();
     }
     
@@ -1318,20 +1431,17 @@ class DemandTransferApp {
             this.granularTransfers[dfuStr][sourceStr][targetStr][weekKey].customQuantity = 
                 quantity === '' ? null : parseFloat(quantity);
             
-            // Update action buttons only
             this.updateActionButtonsOnly();
         }
     }
     
     updateActionButtonsOnly() {
-        // Only update the action buttons section without full re-render
         const actionButtonsContainer = document.querySelector('.action-buttons-container');
         if (actionButtonsContainer && this.selectedDFU) {
             const hasTransfers = ((this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0) || 
                                  this.bulkTransfers[this.selectedDFU] || 
                                  (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
             
-            // Check if we have a recent execution summary to show
             const hasExecutionSummary = this.lastExecutionSummary[this.selectedDFU];
             
             if (hasTransfers) {
@@ -1359,7 +1469,6 @@ class DemandTransferApp {
                     </div>
                 `;
                 
-                // Re-attach button listeners
                 const executeBtn = document.getElementById('executeBtn');
                 if (executeBtn) {
                     executeBtn.addEventListener('click', () => this.executeTransfer(this.selectedDFU));
@@ -1404,30 +1513,22 @@ class DemandTransferApp {
             return;
         }
         
-        // Check if variant already exists
         const trimmedVariant = variantCode.trim();
         if (dfuData.variants.some(v => this.toComparableString(v) === this.toComparableString(trimmedVariant))) {
             this.showNotification('Variant already exists', 'error');
             return;
         }
         
-        console.log(`Adding variant ${trimmedVariant} to DFU ${dfuStr}`);
-        
-        // Get all records for this DFU
         const dfuRecords = this.rawData.filter(r => 
             this.toComparableString(r['DFU']) === dfuStr
         );
         
-        console.log(`Found ${dfuRecords.length} records for DFU ${dfuStr}`);
-        
-        // Create new records for the new variant
         const newRecords = [];
         const processedCombos = new Set();
         
         dfuRecords.forEach(record => {
             const weekNum = record['Week Number'];
             const sourceLoc = record['Source Location'];
-            const calWeek = record['Calendar.week'];
             const comboKey = `${weekNum}_${sourceLoc}`;
             
             if (!processedCombos.has(comboKey)) {
@@ -1443,7 +1544,6 @@ class DemandTransferApp {
             }
         });
         
-        // If no records were created, create at least one
         if (newRecords.length === 0 && dfuRecords.length > 0) {
             const templateRecord = dfuRecords[0];
             const newRecord = { ...templateRecord };
@@ -1454,12 +1554,7 @@ class DemandTransferApp {
             newRecords.push(newRecord);
         }
         
-        console.log(`Created ${newRecords.length} new records for variant ${trimmedVariant}`);
-        
-        // Add new records to rawData
         this.rawData.push(...newRecords);
-        
-        // Re-process the data
         this.processMultiVariantDFUs(this.rawData);
         
         this.showNotification(`Variant ${trimmedVariant} added successfully with ${newRecords.length} records`);
@@ -1468,7 +1563,6 @@ class DemandTransferApp {
     
     executeTransfer(dfuCode) {
         const dfuStr = this.toComparableString(dfuCode);
-        console.log(`Executing transfer for DFU ${dfuStr}`);
         
         if (!this.multiVariantDFUs[dfuStr]) {
             this.showNotification('DFU not found', 'error');
@@ -1478,18 +1572,11 @@ class DemandTransferApp {
         const dfuData = this.multiVariantDFUs[dfuStr];
         const { dfuColumn, partNumberColumn, demandColumn, weekNumberColumn, sourceLocationColumn } = dfuData;
         
-        // Get all records for this DFU
         const dfuRecords = this.rawData.filter(record => this.toComparableString(record[dfuColumn]) === dfuStr);
-        
-        console.log(`Found ${dfuRecords.length} records for DFU ${dfuStr}`);
-        
-        // Store original variants for restoration
         const originalVariants = new Set(dfuData.variants);
         
-        // Handle bulk transfer
         if (this.bulkTransfers[dfuStr]) {
             const targetVariant = this.bulkTransfers[dfuStr];
-            console.log(`Executing bulk transfer: All variants → ${targetVariant}`);
             
             dfuRecords.forEach(record => {
                 const currentPartNumber = this.toComparableString(record[partNumberColumn]);
@@ -1499,17 +1586,14 @@ class DemandTransferApp {
                 }
             });
             
-            // Consolidate records after bulk transfer
             this.consolidateRecords(dfuStr, originalVariants);
             
-            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'bulk',
                 targetVariant: targetVariant,
                 timestamp: new Date().toLocaleString()
             };
             
-            // Store execution summary
             this.lastExecutionSummary[dfuStr] = {
                 type: 'Bulk Transfer',
                 message: `All variants transferred to ${targetVariant}`,
@@ -1519,14 +1603,8 @@ class DemandTransferApp {
             this.showNotification(`Bulk transfer completed for DFU ${dfuStr}: All variants → ${targetVariant}`);
         }
         
-        // Handle individual transfers
         else if (this.transfers[dfuStr] && Object.keys(this.transfers[dfuStr]).length > 0) {
             const individualTransfers = this.transfers[dfuStr];
-            
-            console.log(`Executing individual transfers for DFU ${dfuStr}`);
-            console.log(`Individual transfers:`, individualTransfers);
-            
-            let transferCount = 0;
             
             Object.keys(individualTransfers).forEach(sourceVariant => {
                 const targetVariant = individualTransfers[sourceVariant];
@@ -1537,16 +1615,13 @@ class DemandTransferApp {
                         if (currentPartNumber === sourceVariant) {
                             record['Transfer History'] = `Transferred from ${sourceVariant} to ${targetVariant} on ${new Date().toLocaleString()}`;
                             record[partNumberColumn] = targetVariant;
-                            transferCount++;
                         }
                     });
                 }
             });
             
-            // Consolidate records after individual transfers
             this.consolidateRecords(dfuStr, originalVariants);
             
-            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'individual',
                 transfers: individualTransfers,
@@ -1558,31 +1633,19 @@ class DemandTransferApp {
                 .map(src => `${src} → ${individualTransfers[src]}`)
                 .join(', ');
             
-            // Store execution summary
             this.lastExecutionSummary[dfuStr] = {
                 type: 'Individual Transfer',
                 message: executionMessage,
-                timestamp: new Date().toLocaleString(),
-                details: `<ul class="list-disc list-inside">${
-                    Object.keys(individualTransfers).filter(src => src !== individualTransfers[src]).map(src =>
-                        `<li>${src} → ${individualTransfers[src]}</li>`
-                    ).filter(Boolean).join('')}
-            </ul>`
+                timestamp: new Date().toLocaleString()
             };
             
             this.showNotification(`Individual transfers completed for DFU ${dfuStr}: ${executionMessage}`);
         }
         
-        // Handle granular transfers
         else if (this.granularTransfers[dfuStr] && Object.keys(this.granularTransfers[dfuStr]).length > 0) {
             const granularTransfers = this.granularTransfers[dfuStr];
-            
-            console.log(`Executing granular transfers for DFU ${dfuStr}`);
-            console.log(`Granular transfers:`, granularTransfers);
-            
             let granularTransferCount = 0;
             
-            // Process each source variant's granular transfers
             Object.keys(granularTransfers).forEach(sourceVariant => {
                 const sourceTargets = granularTransfers[sourceVariant];
                 
@@ -1595,7 +1658,6 @@ class DemandTransferApp {
                         
                         const [weekNumber, sourceLocation] = weekKey.split('-');
                         
-                        // Find the specific source record for this week and location
                         const sourceRecord = dfuRecords.find(r => 
                             this.toComparableString(r[partNumberColumn]) === sourceVariant &&
                             this.toComparableString(r[weekNumberColumn]) === weekNumber &&
@@ -1607,7 +1669,6 @@ class DemandTransferApp {
                             const transferAmount = weekTransfer.customQuantity !== null ? 
                                 weekTransfer.customQuantity : originalDemand;
                             
-                            // Create or update target record
                             let targetRecord = dfuRecords.find(r => 
                                 this.toComparableString(r[partNumberColumn]) === targetVariant &&
                                 this.toComparableString(r[weekNumberColumn]) === weekNumber &&
@@ -1619,7 +1680,6 @@ class DemandTransferApp {
                                 targetRecord[demandColumn] = currentTargetDemand + transferAmount;
                                 targetRecord['Transfer History'] = `Received ${transferAmount} from ${sourceVariant} (granular) on ${new Date().toLocaleString()}`;
                             } else {
-                                // Create new record for target
                                 targetRecord = { ...sourceRecord };
                                 targetRecord[partNumberColumn] = targetVariant;
                                 targetRecord[demandColumn] = transferAmount;
@@ -1627,7 +1687,6 @@ class DemandTransferApp {
                                 this.rawData.push(targetRecord);
                             }
                             
-                            // Update source record
                             sourceRecord[demandColumn] = originalDemand - transferAmount;
                             sourceRecord['Transfer History'] = `Transferred ${transferAmount} to ${targetVariant} (granular) on ${new Date().toLocaleString()}`;
                             
@@ -1637,14 +1696,12 @@ class DemandTransferApp {
                 });
             });
             
-            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'granular',
                 transferCount: granularTransferCount,
                 timestamp: new Date().toLocaleString()
             };
             
-            // Store execution summary
             this.lastExecutionSummary[dfuStr] = {
                 type: 'Granular Transfer',
                 message: `${granularTransferCount} week-specific transfers completed`,
@@ -1654,68 +1711,40 @@ class DemandTransferApp {
             this.showNotification(`Granular transfer completed for DFU ${dfuStr}: ${granularTransferCount} weeks transferred`);
         }
         
-        // Clear transfer settings
         delete this.transfers[dfuStr];
         delete this.bulkTransfers[dfuStr];
         delete this.granularTransfers[dfuStr];
         
-        console.log('Step 3: Reprocessing all DFUs...');
         this.processMultiVariantDFUs(this.rawData);
         
-        console.log('Step 4: Updating UI...');
-        // Force complete UI refresh by clearing selection and re-rendering
         const currentSelection = this.selectedDFU;
         this.selectedDFU = null;
-        
-        // First render to clear old data
         this.render();
         
-        // Restore selection and render again to show fresh data
         setTimeout(() => {
-            console.log('Step 5: Restoring selection with fresh data...');
             this.selectedDFU = currentSelection;
-            
-            // Log the current DFU data to verify it's correct
-            if (this.multiVariantDFUs[currentSelection]) {
-                console.log('Fresh DFU data for UI:', this.multiVariantDFUs[currentSelection]);
-                console.log('Fresh variant demand data:', this.multiVariantDFUs[currentSelection].variantDemand);
-            }
-            
-            // Force a complete DOM rebuild for the selected DFU section
             this.forceUIRefresh();
-            console.log('Transfer and UI update complete!');
         }, 300);
     }
     
     consolidateRecords(dfuCode, originalVariants = null) {
         const dfuStr = this.toComparableString(dfuCode);
-        console.log(`Consolidating records for DFU ${dfuStr}`);
         
-        // Get the column information from the current DFU data
         const currentDFUData = this.multiVariantDFUs[dfuStr] || Object.values(this.multiVariantDFUs)[0];
-        if (!currentDFUData) {
-            console.error('No DFU data available for consolidation');
-            return;
-        }
+        if (!currentDFUData) return;
         
-        const { dfuColumn, partNumberColumn, demandColumn, calendarWeekColumn, sourceLocationColumn, weekNumberColumn } = currentDFUData;
+        const { dfuColumn, partNumberColumn, demandColumn, weekNumberColumn, sourceLocationColumn } = currentDFUData;
         
-        // Get all records for this DFU
         const allRecords = this.rawData;
         const dfuRecords = allRecords.filter(record => this.toComparableString(record[dfuColumn]) === dfuStr);
         
-        console.log(`Found ${dfuRecords.length} records for DFU ${dfuStr} before consolidation`);
-        
-        // Use provided original variants or extract from current records
         const allPartNumbers = originalVariants || new Set();
         if (!originalVariants) {
             dfuRecords.forEach(record => {
                 allPartNumbers.add(this.toComparableString(record[partNumberColumn]));
             });
         }
-        console.log('All part numbers to preserve:', Array.from(allPartNumbers));
         
-        // Create a map of consolidated records
         const consolidatedMap = new Map();
         
         dfuRecords.forEach(record => {
@@ -1732,14 +1761,12 @@ class DemandTransferApp {
                 const additionalDemand = parseFloat(record[demandColumn]) || 0;
                 existing[demandColumn] = currentDemand + additionalDemand;
                 
-                // Update transfer history
                 if (record['Transfer History']) {
                     existing['Transfer History'] = (existing['Transfer History'] || '') + '; ' + record['Transfer History'];
                 }
             }
         });
         
-        // Replace old DFU records with consolidated ones
         this.rawData = this.rawData.filter(record => 
             this.toComparableString(record[dfuColumn]) !== dfuStr
         );
@@ -1747,44 +1774,17 @@ class DemandTransferApp {
         consolidatedMap.forEach(record => {
             this.rawData.push(record);
         });
-        
-        console.log(`Consolidated ${dfuRecords.length} records into ${consolidatedMap.size} records for DFU ${dfuStr}`);
-        
-        // Log variant summary
-        const variantSummary = {};
-        this.rawData.filter(r => this.toComparableString(r[dfuColumn]) === dfuStr).forEach(record => {
-            const partNumber = this.toComparableString(record[partNumberColumn]);
-            const demand = parseFloat(record[demandColumn]) || 0;
-            
-            if (!variantSummary[partNumber]) {
-                variantSummary[partNumber] = { totalDemand: 0, recordCount: 0 };
-            }
-            variantSummary[partNumber].totalDemand += demand;
-            variantSummary[partNumber].recordCount += 1;
-        });
-        
-        console.log(`DFU ${dfuStr} variant summary after consolidation:`, variantSummary);
     }
     
     forceUIRefresh() {
-        // Get the app container and force a complete re-render
         const app = document.getElementById('app');
-        
-        // Store current state
         const currentSearch = this.searchTerm;
         
-        // Temporarily clear the container
         app.innerHTML = '<div class="max-w-6xl mx-auto p-6 bg-white min-h-screen"><div class="text-center py-12"><div class="loading-spinner mb-2"></div><p>Refreshing interface...</p></div></div>';
         
-        // Force a short delay then rebuild
         setTimeout(() => {
-            // Restore search term
             this.searchTerm = currentSearch;
-            
-            // Rebuild the entire interface
             this.render();
-            
-            console.log('Forced UI refresh complete - interface rebuilt from scratch');
         }, 100);
     }
     
@@ -1798,48 +1798,32 @@ class DemandTransferApp {
     
     undoTransfer(dfuCode) {
         const dfuStr = this.toComparableString(dfuCode);
-        console.log(`Undoing transfer for DFU ${dfuStr}`);
         
         if (!this.originalRawData || this.originalRawData.length === 0) {
             this.showNotification('No original data available to restore', 'error');
             return;
         }
         
-        // Remove from completed transfers
         delete this.completedTransfers[dfuStr];
-        
-        // Clear any current transfer settings
         delete this.transfers[dfuStr];
         delete this.bulkTransfers[dfuStr];
         delete this.granularTransfers[dfuStr];
-        
-        // Clear execution summary
         delete this.lastExecutionSummary[dfuStr];
         
-        // Restore the original data from backup - COMPLETE restoration
-        console.log('Restoring original data from backup...');
-        
-        // Get original DFU records
         const originalDfuRecords = this.originalRawData.filter(record => 
             this.toComparableString(record['DFU']) === dfuStr
         );
         
-        // Remove all current DFU records from rawData
         this.rawData = this.rawData.filter(record => 
             this.toComparableString(record['DFU']) !== dfuStr
         );
         
-        // Add back the original DFU records (deep copy to prevent reference issues)
         const restoredRecords = originalDfuRecords.map(record => ({...record}));
         this.rawData.push(...restoredRecords);
         
-        console.log(`Restored ${restoredRecords.length} original records for DFU ${dfuStr}`);
-        
-        // Force recalculation of multi-variant DFUs
         this.multiVariantDFUs = {};
         this.filteredDFUs = {};
         
-        // Re-process the data to show the variants again with original quantities
         this.processMultiVariantDFUs(this.rawData);
         
         this.showNotification(`Transfer undone for DFU ${dfuStr}. Original data restored.`);
@@ -1847,9 +1831,6 @@ class DemandTransferApp {
     }
     
     attachGranularEventListeners() {
-        console.log('Attaching granular event listeners...');
-        
-        // Granular transfer checkbox handlers
         document.querySelectorAll('[data-granular-toggle]').forEach(checkbox => {
             const newCheckbox = checkbox.cloneNode(true);
             checkbox.parentNode.replaceChild(newCheckbox, checkbox);
@@ -1869,7 +1850,6 @@ class DemandTransferApp {
             });
         });
         
-        // Granular transfer quantity handlers
         document.querySelectorAll('[data-granular-qty]').forEach(input => {
             const newInput = input.cloneNode(true);
             input.parentNode.replaceChild(newInput, input);
@@ -1889,7 +1869,6 @@ class DemandTransferApp {
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    // Only auto-initialize if not in multi-user mode
     if (!window.preventAutoInit) {
         new DemandTransferApp();
     }
