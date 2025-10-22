@@ -1,6 +1,6 @@
 // DFU Demand Transfer Management Application
-// Version: 2.20.0 - Build: 2025-12-17-all-dfus
-// Added support for all DFUs and manual variant addition
+// Version: 2.21.0 - Build: 2025-10-22-soh-integration
+// Added SOH (Stock on Hand) display from Stock RRP4 file
 
 class DemandTransferApp {
     constructor() {
@@ -25,13 +25,15 @@ class DemandTransferApp {
         this.hasVariantCycleData = false; // Flag to check if cycle data is loaded
         this.keepZeroVariants = true; // Flag to keep variants with 0 demand visible
         this.searchDebounceTimer = null; // Debounce timer for search input
+        this.stockData = {}; // Format: { productNumber: totalStock }
+        this.hasStockData = false; // Flag to check if stock data is loaded
         
         this.init();
     }
     
     init() {
-        console.log('🚀 DFU Demand Transfer App v2.20.0 - Build: 2025-12-17-all-dfus');
-        console.log('📋 Added support for all DFUs and manual variant addition');
+        console.log('🚀 DFU Demand Transfer App v2.21.0 - Build: 2025-10-22-soh-integration');
+        console.log('📋 Added SOH display from Stock RRP4 file');
         this.render();
         this.attachEventListeners();
     }
@@ -46,35 +48,57 @@ class DemandTransferApp {
     getDateFromWeekNumber(year, weekNumber) {
         const jan1 = new Date(year, 0, 1);
         const jan1DayOfWeek = jan1.getDay();
-        const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek) % 7;
-        const firstMonday = new Date(year, 0, 1 + daysToFirstMonday);
+        const daysToFirstMonday = jan1DayOfWeek === 0 ? 1 : (8 - jan1DayOfWeek);
+        const firstMonday = new Date(year, 0, jan1.getDate() + daysToFirstMonday);
         const targetDate = new Date(firstMonday);
         targetDate.setDate(firstMonday.getDate() + (weekNumber - 1) * 7);
         return targetDate;
     }
     
+    formatNumber(num) {
+        if (num === null || num === undefined) return '0';
+        return Math.round(num).toLocaleString();
+    }
+    
     showNotification(message, type = 'success') {
+        console.log(`[${type.toUpperCase()}] ${message}`);
+        
+        const container = document.getElementById('notifications') || this.createNotificationContainer();
         const notification = document.createElement('div');
-        notification.className = `notification ${type}`;
+        
+        const colors = {
+            success: 'bg-green-500',
+            error: 'bg-red-500',
+            info: 'bg-blue-500',
+            warning: 'bg-yellow-500'
+        };
+        
+        notification.className = `${colors[type] || colors.info} text-white px-6 py-3 rounded-lg shadow-lg mb-2`;
         notification.textContent = message;
-        document.body.appendChild(notification);
+        
+        container.appendChild(notification);
         
         setTimeout(() => {
-            notification.remove();
-        }, 3000);
+            notification.style.opacity = '0';
+            setTimeout(() => notification.remove(), 300);
+        }, 5000);
     }
     
-    formatNumber(num) {
-        return new Intl.NumberFormat().format(num);
+    createNotificationContainer() {
+        const container = document.createElement('div');
+        container.id = 'notifications';
+        container.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999;';
+        document.body.appendChild(container);
+        return container;
     }
-    
+
     async loadVariantCycleData(file) {
-        console.log('Starting to load variant cycle data...');
+        console.log('Loading variant cycle data...');
+        this.isLoading = true;
+        this.render();
         
         try {
             const arrayBuffer = await file.arrayBuffer();
-            console.log('Variant cycle array buffer size:', arrayBuffer.byteLength);
-            
             const workbook = XLSX.read(arrayBuffer, { 
                 cellStyles: true, 
                 cellFormulas: true, 
@@ -83,31 +107,24 @@ class DemandTransferApp {
                 sheetStubs: true
             });
             
-            console.log('Available sheets in cycle file:', workbook.SheetNames);
-            
-            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
             const data = XLSX.utils.sheet_to_json(worksheet);
             
-            console.log('Loaded variant cycle data:', data.length, 'records');
+            console.log(`Loaded ${data.length} cycle data records`);
             
-            if (data.length > 0) {
-                console.log('Sample cycle record:', data[0]);
-                console.log('Available columns:', Object.keys(data[0]));
-                
-                // Process the cycle data
-                this.processCycleData(data);
-                this.hasVariantCycleData = true;
-                this.showNotification(`Successfully loaded ${data.length} variant cycle records`);
-                
-                // Re-render to show the new data
-                this.render();
-            } else {
-                this.showNotification('No data found in the variant cycle file', 'error');
-            }
+            this.processCycleData(data);
+            
+            this.hasVariantCycleData = true;
+            this.showNotification('Variant cycle data loaded successfully!', 'success');
             
         } catch (error) {
-            console.error('Error loading variant cycle data:', error);
-            this.showNotification('Error loading variant cycle data: ' + error.message, 'error');
+            console.error('Error loading cycle data:', error);
+            this.showNotification('Error loading cycle data: ' + error.message, 'error');
+            this.hasVariantCycleData = false;
+        } finally {
+            this.isLoading = false;
+            this.render();
         }
     }
     
@@ -209,6 +226,57 @@ class DemandTransferApp {
         
         this.loadData(file);
     }
+
+    async handleStockFile(file) {
+        console.log('Processing Stock RRP4 file...');
+        this.isLoading = true;
+        this.render();
+        
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const workbook = XLSX.read(arrayBuffer, { 
+                cellStyles: true, 
+                cellFormulas: true, 
+                cellDates: true,
+                cellNF: true,
+                sheetStubs: true
+            });
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const jsonData = XLSX.utils.sheet_to_json(worksheet);
+            
+            console.log(`Loaded ${jsonData.length} stock records`);
+            
+            // Clear existing stock data
+            this.stockData = {};
+            
+            // Process and aggregate stock by Product Number
+            jsonData.forEach(record => {
+                const productNumber = this.toComparableString(record['Product Number']);
+                const stock = parseFloat(record['Stock']) || 0;
+                
+                if (productNumber) {
+                    if (!this.stockData[productNumber]) {
+                        this.stockData[productNumber] = 0;
+                    }
+                    this.stockData[productNumber] += stock;
+                }
+            });
+            
+            console.log(`Aggregated stock for ${Object.keys(this.stockData).length} unique product numbers`);
+            this.hasStockData = true;
+            this.showNotification('Stock data loaded successfully!', 'success');
+            
+        } catch (error) {
+            console.error('Error processing stock file:', error);
+            this.showNotification('Error loading stock file. Please check the file format.', 'error');
+            this.hasStockData = false;
+        } finally {
+            this.isLoading = false;
+            this.render();
+        }
+    }
     
     async loadData(file) {
         console.log('Starting to load data...');
@@ -299,55 +367,42 @@ class DemandTransferApp {
         const sourceLocationColumn = 'Source Location';
         const weekNumberColumn = 'Week Number';
         
-        console.log('Using column mapping:', { 
-            dfuColumn, 
-            partNumberColumn, 
-            demandColumn, 
-            partDescriptionColumn, 
+        console.log('Using columns:', {
+            dfuColumn,
+            partNumberColumn,
+            demandColumn,
             plantLocationColumn,
             productionLineColumn,
-            calendarWeekColumn,
-            sourceLocationColumn,
-            weekNumberColumn
+            partDescriptionColumn
         });
         
-        // Validate required columns exist
-        const requiredColumns = [dfuColumn, partNumberColumn, demandColumn, weekNumberColumn];
-        const missingColumns = requiredColumns.filter(col => !columns.includes(col));
+        // Get unique plant locations and production lines for filter
+        this.availablePlantLocations = [...new Set(data.map(r => this.toComparableString(r[plantLocationColumn])))].filter(Boolean).sort();
+        this.availableProductionLines = [...new Set(data.map(r => this.toComparableString(r[productionLineColumn])))].filter(Boolean).sort();
         
-        if (missingColumns.length > 0) {
-            this.showNotification(`Missing required columns: ${missingColumns.join(', ')}`, 'error');
-            console.error('Missing columns:', missingColumns);
-            console.log('Available columns:', columns);
-            return;
-        }
+        console.log('Available plant locations:', this.availablePlantLocations.length);
+        console.log('Available production lines:', this.availableProductionLines.length);
         
-        // Extract unique plant locations and production lines for filtering
-        this.availablePlantLocations = [...new Set(data.map(record => this.toComparableString(record[plantLocationColumn])))].filter(Boolean).sort();
-        this.availableProductionLines = [...new Set(data.map(record => this.toComparableString(record[productionLineColumn])))].filter(Boolean).sort();
-        
-        console.log('Available Plant Locations:', this.availablePlantLocations);
-        console.log('Available Production Lines:', this.availableProductionLines);
-        
-        const groupedByDFU = {};
-        
-        // Filter data by plant location and production line if selected
+        // Filter data if filters are applied
         let filteredData = data;
         
         if (this.selectedPlantLocation) {
             filteredData = filteredData.filter(record => 
                 this.toComparableString(record[plantLocationColumn]) === this.selectedPlantLocation
             );
+            console.log('Filtered by plant location:', this.selectedPlantLocation, '- Records:', filteredData.length);
         }
         
         if (this.selectedProductionLine) {
             filteredData = filteredData.filter(record => 
                 this.toComparableString(record[productionLineColumn]) === this.selectedProductionLine
             );
+            console.log('Filtered by production line:', this.selectedProductionLine, '- Records:', filteredData.length);
         }
-            
-        console.log('Total data records:', data.length);
-        console.log('Filtered data records:', filteredData.length);
+        
+        // Group records by DFU
+        const groupedByDFU = {};
+        
         console.log('Filters applied - Plant:', this.selectedPlantLocation || 'All', 'Line:', this.selectedProductionLine || 'All');
         
         if ((this.selectedPlantLocation || this.selectedProductionLine) && filteredData.length === 0) {
@@ -449,42 +504,702 @@ class DemandTransferApp {
                 plantLocations: uniquePlants,
                 productionLines: uniqueProductionLines,
                 plantLocation: records[0] ? this.toComparableString(records[0][plantLocationColumn]) : null,
-                productionLine: records[0] ? this.toComparableString(records[0][productionLineColumn]) : null,
-                isSingleVariant: activeVariants.length === 1
+                productionLine: records[0] ? this.toComparableString(records[0][productionLineColumn]) : null
             };
-            
-            console.log(`DFU ${dfuCode} - Variants: ${activeVariants.length}, Plants: ${uniquePlants.join(', ')}, Lines: ${uniqueProductionLines.join(', ')}`);
         });
-
-        console.log('Total DFUs found:', totalDFUCount);
-
-        this.multiVariantDFUs = allDFUs;
-        this.filteredDFUs = allDFUs;
         
-        this.showNotification(`Found ${totalDFUCount} DFUs (${Object.keys(allDFUs).filter(dfu => !allDFUs[dfu].isSingleVariant).length} with multiple variants)`);
+        console.log('All DFUs count:', totalDFUCount);
+        console.log('Multi-variant DFUs:', Object.values(allDFUs).filter(d => d.variants.length > 1).length);
+        console.log('Single-variant DFUs:', Object.values(allDFUs).filter(d => d.variants.length === 1).length);
+        console.log('Completed transfers:', Object.keys(this.completedTransfers).length);
+        
+        this.multiVariantDFUs = allDFUs;
+        this.filterDFUs();
     }
     
     filterDFUs() {
-        if (this.searchTerm) {
-            const filtered = {};
-            const searchLower = this.searchTerm.toLowerCase();
+        const searchTerm = this.searchTerm.toLowerCase().trim();
+        
+        if (!searchTerm) {
+            this.filteredDFUs = { ...this.multiVariantDFUs };
+        } else {
+            this.filteredDFUs = {};
+            
             Object.keys(this.multiVariantDFUs).forEach(dfuCode => {
-                if (dfuCode.toLowerCase().includes(searchLower) ||
-                    this.multiVariantDFUs[dfuCode].variants.some(v => 
-                        v.toLowerCase().includes(searchLower))) {
-                    filtered[dfuCode] = this.multiVariantDFUs[dfuCode];
+                const dfu = this.multiVariantDFUs[dfuCode];
+                const dfuCodeLower = dfuCode.toLowerCase();
+                const variantsLower = dfu.variants.map(v => v.toLowerCase());
+                
+                if (dfuCodeLower.includes(searchTerm) || 
+                    variantsLower.some(v => v.includes(searchTerm))) {
+                    this.filteredDFUs[dfuCode] = dfu;
                 }
             });
-            this.filteredDFUs = filtered;
-        } else {
-            this.filteredDFUs = this.multiVariantDFUs;
         }
-        this.render();
         
-        // Restore focus to search input after render
+        this.render();
+    }
+    
+    async exportData() {
+        try {
+            console.log('Exporting data...');
+            
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.json_to_sheet(this.rawData);
+            XLSX.utils.book_append_sheet(wb, ws, 'Updated Data');
+            XLSX.writeFile(wb, `DFU_Updated_${new Date().toISOString().slice(0,10)}.xlsx`);
+            
+            this.showNotification('Data exported successfully');
+        } catch (error) {
+            console.error('Error exporting data:', error);
+            this.showNotification('Error exporting data: ' + error.message, 'error');
+        }
+    }
+    
+    render() {
+        const app = document.getElementById('app');
+        
+        if (!this.isProcessed) {
+            app.innerHTML = `
+                <div class="max-w-6xl mx-auto p-6 bg-white min-h-screen">
+                    <div class="text-center py-12">
+                        <div class="bg-blue-50 rounded-lg p-8 inline-block">
+                            <div class="w-12 h-12 mb-4 mx-auto bg-blue-600 rounded-full flex items-center justify-center">
+                                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                                </svg>
+                            </div>
+                            <h2 class="text-xl font-semibold mb-2">Upload Demand Data</h2>
+                            <p class="text-gray-600 mb-4">
+                                Upload your Excel file with the new "Total Demand" format
+                            </p>
+                            
+                            ${this.isLoading ? `
+                                <div class="text-blue-600">
+                                    <div class="loading-spinner mb-2"></div>
+                                    <p>Processing file...</p>
+                                </div>
+                            ` : `
+                                <div class="space-y-4">
+                                    <div>
+                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="fileInput">
+                                        <p class="text-sm text-gray-500 mt-2">
+                                            Supported formats: .xlsx, .xls
+                                        </p>
+                                    </div>
+                                    
+                                    <div class="text-left text-sm text-gray-600 bg-gray-50 p-4 rounded-lg">
+                                        <p class="font-medium mb-2">Expected columns in your Excel file:</p>
+                                        <ul class="list-disc list-inside space-y-1">
+                                            <li><strong>DFU</strong> - DFU codes</li>
+                                            <li><strong>Product Number</strong> - Part/product codes</li>
+                                            <li><strong>weekly fcst</strong> - Demand/forecast values</li>
+                                            <li><strong>PartDescription</strong> - Product descriptions</li>
+                                            <li><strong>Production Plant</strong> - Plant location codes</li>
+                                            <li><strong>Production Line</strong> - Production line codes</li>
+                                            <li><strong>Week Number</strong> - Week number values</li>
+                                            <li><strong>Source Location</strong> - Source location codes</li>
+                                        </ul>
+                                    </div>
+                                    
+                                    <div class="border-t pt-4 mt-4">
+                                        <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Upload Variant Cycle Dates</h3>
+                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="cycleFileInput">
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            Upload file with DFU, Part Code, SOS, and EOS columns
+                                        </p>
+                                    </div>
+                                    
+                                    <div class="border-t pt-4 mt-4">
+                                        <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Upload Stock RRP4</h3>
+                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="stockFileInput">
+                                        <p class="text-xs text-gray-500 mt-1">
+                                            ${this.hasStockData ? '✓ Stock Data Loaded - ' : ''}Upload file with Product Number and Stock columns
+                                        </p>
+                                    </div>
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            if (!this.isLoading) {
+                const fileInput = document.getElementById('fileInput');
+                fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
+                
+                const cycleFileInput = document.getElementById('cycleFileInput');
+                if (cycleFileInput) {
+                    cycleFileInput.addEventListener('change', (e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                            this.loadVariantCycleData(file);
+                        }
+                    });
+                }
+                
+                const stockFileInput = document.getElementById('stockFileInput');
+                if (stockFileInput) {
+                    stockFileInput.addEventListener('change', (e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                            this.handleStockFile(file);
+                        }
+                    });
+                }
+            }
+            
+            return;
+        }
+        
+        const totalDFUs = Object.keys(this.filteredDFUs).length;
+        const multiVariantCount = Object.keys(this.filteredDFUs).filter(dfu => !this.filteredDFUs[dfu].isSingleVariant).length;
+        
+        app.innerHTML = `
+            <div>
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">DFU Demand Transfer Management</h1>
+                <p class="text-gray-600">
+                    Managing ${totalDFUs} DFUs (${multiVariantCount} with multiple variants, ${totalDFUs - multiVariantCount} single variant)
+                </p>
+            </div>
+
+                <div class="flex gap-4 mb-6 flex-responsive">
+                    <div class="relative flex-1">
+                        <svg class="absolute left-3 top-3 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                        <input 
+                            type="text" 
+                            placeholder="Search DFU codes or part codes..." 
+                            value="${this.searchTerm}"
+                            class="search-input"
+                            id="searchInput"
+                        >
+                    </div>
+                    <div class="relative">
+                        <select class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="plantLocationFilter">
+                            <option value="">All Plant Locations</option>
+                            ${this.availablePlantLocations.map(location => `
+                                <option value="${location}" ${this.selectedPlantLocation === location ? 'selected' : ''}>
+                                    Plant ${location}
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    <div class="relative">
+                        <select class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="productionLineFilter">
+                            <option value="">All Production Lines</option>
+                            ${this.availableProductionLines.map(line => `
+                                <option value="${line}" ${this.selectedProductionLine === line ? 'selected' : ''}>
+                                    Line ${line}
+                                </option>
+                            `).join('')}
+                        </select>
+                    </div>
+                    ${this.hasVariantCycleData ? `
+                        <span class="inline-flex items-center px-3 py-2 text-sm text-green-700 bg-green-100 rounded-lg">
+                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Cycle Data Loaded
+                        </span>
+                    ` : `
+                        <label class="btn btn-secondary cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                            </svg>
+                            Load Cycle Dates
+                            <input type="file" accept=".xlsx,.xls" class="hidden" id="cycleFileInput">
+                        </label>
+                    `}
+                    <button class="btn btn-success" id="exportBtn">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Export Updated Data
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 grid-responsive">
+                    <div class="bg-gray-50 rounded-lg p-6">
+                        <h3 class="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                            </svg>
+                            All DFUs (${Object.keys(this.filteredDFUs).length})
+                        </h3>
+                        <div class="space-y-2 h-full overflow-y-auto" style="max-height: calc(100vh - 300px);">
+                            ${Object.keys(this.filteredDFUs).map(dfuCode => {
+                                const dfu = this.filteredDFUs[dfuCode];
+                                const isSelected = this.selectedDFU === dfuCode;
+                                
+                                return `
+                                    <div class="dfu-card ${isSelected ? 'selected' : ''}" data-dfu="${dfuCode}">
+                                        <div class="flex justify-between items-center">
+                                            <div>
+                                                <h4 class="font-medium">DFU: ${dfuCode}</h4>
+                                                <p class="text-sm text-gray-600">
+                                                    ${dfu.variants.length} variant${dfu.variants.length > 1 ? 's' : ''} • ${dfu.totalRecords} records
+                                                    ${dfu.isCompleted ? '• ✓ Complete' : ''}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                    
+                    <div class="bg-gray-50 rounded-lg p-6">
+                        ${this.renderDFUDetails()}
+                    </div>
+                </div>
+        `;
+        
+        this.attachEventListeners();
+        this.ensureGranularContainers();
+    }
+    
+    renderDFUDetails() {
+        if (!this.selectedDFU || !this.multiVariantDFUs[this.selectedDFU]) {
+            return `
+                <div class="text-center py-12 text-gray-500">
+                    <svg class="w-12 h-12 mx-auto mb-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                    </svg>
+                    <p>Select a DFU from the list to view details</p>
+                </div>
+            `;
+        }
+        
+        return `
+            <div>
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-semibold text-gray-800">
+                        DFU: ${this.selectedDFU}
+                        ${this.multiVariantDFUs[this.selectedDFU].plantLocations && this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 0 ? 
+                            ` (Plant${this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].plantLocations.join(', ')})` : ''}
+                        ${this.multiVariantDFUs[this.selectedDFU].productionLines && this.multiVariantDFUs[this.selectedDFU].productionLines.length > 0 ? 
+                            ` (Line${this.multiVariantDFUs[this.selectedDFU].productionLines.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].productionLines.join(', ')})` : ''}
+                        - Variant Details
+                        ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
+                            <span class="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
+                                ✓ Transfer Complete
+                            </span>
+                        ` : ''}
+                    </h3>
+                    ${!this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
+                        <button class="btn btn-primary text-sm" id="addVariantBtn">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                            </svg>
+                            Add Variant
+                        </button>
+                    ` : ''}
+                </div>
+                
+                ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
+                    <!-- Current Variant Status -->
+                    <div class="mb-6">
+                        <h4 class="font-semibold text-gray-800 mb-3">Current Variant Status</h4>
+                        <div class="space-y-3">
+                            ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
+                                const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
+                                
+                                return `
+                                    <div class="border rounded-lg p-3 bg-white">
+                                        <div class="flex justify-between items-center">
+                                            <div class="flex-1">
+                                                <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
+                                                <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
+                                                <p class="text-sm text-gray-600">${demandData?.recordCount || 0} records</p>
+                                            </div>
+                                            <div class="text-right">
+                                                <p class="font-medium text-gray-800">${this.formatNumber(demandData?.totalDemand || 0)}</p>
+                                                <p class="text-sm text-gray-600">consolidated demand</p>
+                                                ${this.hasStockData ? `
+                                                    <p class="font-medium text-blue-600 mt-2">${this.formatNumber(this.stockData[variant] || 0)}</p>
+                                                    <p class="text-xs text-blue-600">SOH</p>
+                                                ` : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                ` : `
+                    <!-- Bulk Transfer Section -->
+                    <div class="mb-6 p-4 bg-purple-50 rounded-lg border">
+                        <h4 class="font-semibold text-purple-800 mb-3">Bulk Transfer (All Variants → One Target)</h4>
+                        <p class="text-sm text-purple-600 mb-3">Transfer all variants to a single target variant:</p>
+                        <div class="flex flex-wrap gap-2">
+                            ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
+                                const isSelected = this.bulkTransfers[this.selectedDFU] === variant;
+                                return `
+                                    <button 
+                                        class="px-3 py-1 rounded-full text-sm font-medium transition-all ${isSelected ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-800 hover:bg-purple-200'}"
+                                        data-bulk-target="${variant}"
+                                    >
+                                        ${variant}
+                                    </button>
+                                `;
+                            }).join('')}
+                        </div>
+                        ${this.bulkTransfers[this.selectedDFU] ? `
+                            <p class="text-sm text-purple-800 mt-3">
+                                Selected: All variants will transfer to <strong>${this.bulkTransfers[this.selectedDFU]}</strong>
+                            </p>
+                        ` : ''}
+                    </div>
+                    
+                    <!-- Individual Transfer Section -->
+                    ${this.renderIndividualTransferSection()}
+                    
+                    <!-- Action Buttons Container -->
+                    <div class="action-buttons-container">
+                        ${this.renderActionButtons()}
+                    </div>
+                `}
+                
+                ${this.multiVariantDFUs[this.selectedDFU].isCompleted && this.multiVariantDFUs[this.selectedDFU].completionInfo ? `
+                    <div class="mt-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                        <h4 class="font-semibold text-green-800 mb-2">Transfer Details</h4>
+                        <div class="text-sm text-green-700 space-y-1">
+                            <p><strong>Type:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.type}</p>
+                            <p><strong>Time:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.timestamp}</p>
+                            ${this.multiVariantDFUs[this.selectedDFU].completionInfo.targetVariant ? `
+                                <p><strong>Target:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.targetVariant}</p>
+                            ` : ''}
+                        </div>
+                        <button class="btn btn-secondary mt-3 text-sm" id="undoTransferBtn">
+                            Undo Transfer
+                        </button>
+                    </div>
+                ` : ''}
+                
+                <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200 text-sm text-gray-700">
+                    <h4 class="font-semibold text-blue-800 mb-2">How to Use:</h4>
+                    <ul class="list-disc list-inside space-y-1">
+                        <li><strong>Bulk Transfer:</strong> Select one target variant to transfer all variants to</li>
+                        <li><strong>Individual Transfer:</strong> Set specific targets for each variant using dropdowns</li>
+                        <li><strong>Granular Transfer:</strong> Expand any variant and select specific weeks to transfer partial demand</li>
+                        <li><strong>Execute:</strong> Click "Execute Transfer" to apply your chosen transfers</li>
+                        <li><strong>Export:</strong> Export the updated data when you're done with all transfers</li>
+                    </ul>
+                </div>
+            </div>
+        `;
+        
+        this.attachEventListeners();
+        this.ensureGranularContainers();
+    }
+    
+    renderIndividualTransferSection() {
+        if (!this.selectedDFU || !this.multiVariantDFUs[this.selectedDFU]) return '';
+        
+        return `
+            <div class="mb-6">
+                <h4 class="font-semibold text-gray-800 mb-3">Individual Transfers (Variant → Specific Target)</h4>
+                <div class="space-y-4">
+                    ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
+                        const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
+                        const currentTransfer = this.transfers[this.selectedDFU]?.[variant];
+                        
+                        return `
+                            <div class="border rounded-lg p-4 bg-gray-50">
+                                <div class="flex justify-between items-center mb-3">
+                                    <div class="flex-1">
+                                        <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
+                                        <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
+                                        <p class="text-sm text-gray-600">${demandData?.recordCount || 0} records • ${this.formatNumber(demandData?.totalDemand || 0)} total demand${this.hasStockData ? ` • SOH: ${this.formatNumber(this.stockData[variant] || 0)}` : ''}</p>
+                                        ${(() => {
+                                            const cycleData = this.getCycleDataForVariant(this.selectedDFU, variant);
+                                            if (cycleData) {
+                                                return `
+                                                    <div class="mt-1 text-xs space-y-0.5">
+                                                        <p class="text-blue-600"><strong>SOS:</strong> ${cycleData.sos}</p>
+                                                        <p class="text-red-600"><strong>EOS:</strong> ${cycleData.eos}</p>
+                                                        ${cycleData.comments ? `<p class="text-gray-600"><strong>Comments:</strong> ${cycleData.comments}</p>` : ''}
+                                                    </div>
+                                                `;
+                                            }
+                                            return '';
+                                        })()}
+                                    </div>
+                                    <div class="ml-4">
+                                        <select 
+                                            class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                            data-source-variant="${variant}"
+                                        >
+                                            <option value="">Transfer to...</option>
+                                            ${this.multiVariantDFUs[this.selectedDFU].variants.map(targetVariant => 
+                                                `<option value="${targetVariant}" ${currentTransfer === targetVariant ? 'selected' : ''}>${targetVariant}</option>`
+                                            ).join('')}
+                                        </select>
+                                    </div>
+                                </div>
+                                
+                                <!-- Granular Transfer Container -->
+                                <div id="granular-${variant}" class="granular-section"></div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    renderActionButtons() {
+        if (!this.selectedDFU) return '';
+        
+        const hasTransfers = ((this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0) || 
+                             this.bulkTransfers[this.selectedDFU] || 
+                             (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
+        
+        // Check if we have a recent execution summary to show
+        const hasExecutionSummary = this.lastExecutionSummary[this.selectedDFU];
+        
+        if (hasTransfers) {
+            return `
+                <div class="p-3 bg-blue-50 rounded-lg">
+                    <div class="text-sm text-blue-800 mb-3">
+                        ${this.bulkTransfers[this.selectedDFU] ? `
+                            <p><strong>Bulk Transfer:</strong> All variants → ${this.bulkTransfers[this.selectedDFU]}</p>
+                        ` : ''}
+                        ${this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0 ? `
+                            <p><strong>Individual Transfers:</strong></p>
+                            <ul class="list-disc list-inside ml-4">
+                                ${Object.keys(this.transfers[this.selectedDFU]).map(sourceVariant => {
+                                    const targetVariant = this.transfers[this.selectedDFU][sourceVariant];
+                                    return sourceVariant !== targetVariant ? 
+                                        `<li>${sourceVariant} → ${targetVariant}</li>` : '';
+                                }).filter(Boolean).join('')}
+                            </ul>
+                        ` : ''}
+                    </div>
+                    <div class="flex gap-2">
+                        <button class="btn btn-success" id="executeBtn">Execute Transfer</button>
+                        <button class="btn btn-secondary" id="cancelBtn">Cancel</button>
+                    </div>
+                </div>
+            `;
+        } else if (hasExecutionSummary) {
+            return `
+                <div class="p-3 bg-gray-50 rounded-lg">
+                    <div class="text-sm text-gray-700">
+                        <h5 class="font-semibold mb-2 text-gray-800">Last Execution Summary:</h5>
+                        <p><strong>Type:</strong> ${this.lastExecutionSummary[this.selectedDFU].type}</p>
+                        <p><strong>Time:</strong> ${this.lastExecutionSummary[this.selectedDFU].timestamp}</p>
+                        <p><strong>Result:</strong> ${this.lastExecutionSummary[this.selectedDFU].message}</p>
+                    </div>
+                </div>
+            `;
+        }
+        
+        return '';
+    }
+
+    renderGranularSection(sourceVariant, targetVariant) {
+        if (!this.selectedDFU || !targetVariant) return '';
+        
+        const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[sourceVariant];
+        const weeklyRecords = demandData?.weeklyRecords || {};
+        
+        if (Object.keys(weeklyRecords).length === 0) {
+            return '<p class="text-sm text-gray-500 mt-2">No weekly data available</p>';
+        }
+        
+        return `
+            <div class="mt-3 pt-3 border-t">
+                <h6 class="text-sm font-medium text-gray-700 mb-2">Granular Transfer (Select Specific Weeks)</h6>
+                <div class="space-y-2 max-h-48 overflow-y-auto">
+                    ${Object.keys(weeklyRecords).sort().map(weekKey => {
+                        const weekData = weeklyRecords[weekKey];
+                        const isSelected = this.granularTransfers[this.selectedDFU]?.[sourceVariant]?.[targetVariant]?.[weekKey]?.selected || false;
+                        const customQty = this.granularTransfers[this.selectedDFU]?.[sourceVariant]?.[targetVariant]?.[weekKey]?.customQuantity;
+                        
+                        return `
+                            <div class="flex items-center gap-2 text-sm p-2 bg-white rounded">
+                                <input 
+                                    type="checkbox" 
+                                    ${isSelected ? 'checked' : ''} 
+                                    data-granular-toggle
+                                    data-dfu="${this.selectedDFU}"
+                                    data-source="${sourceVariant}"
+                                    data-target="${targetVariant}"
+                                    data-week="${weekKey}"
+                                    class="rounded"
+                                >
+                                <span class="flex-1">Week ${weekData.weekNumber} (${weekData.sourceLocation}): ${this.formatNumber(weekData.demand)}</span>
+                                <input 
+                                    type="number" 
+                                    placeholder="Custom qty"
+                                    class="w-24 px-2 py-1 border rounded text-xs"
+                                    value="${customQty !== null && customQty !== undefined ? customQty : ''}"
+                                    ${!isSelected ? 'disabled' : ''}
+                                    data-granular-qty
+                                    data-dfu="${this.selectedDFU}"
+                                    data-source="${sourceVariant}"
+                                    data-target="${targetVariant}"
+                                    data-week="${weekKey}"
+                                >
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    ensureGranularContainers() {
+        if (this.selectedDFU && this.multiVariantDFUs[this.selectedDFU]) {
+            console.log('=== FORCE CREATING GRANULAR CONTAINERS ===');
+            
+            this.multiVariantDFUs[this.selectedDFU].variants.forEach(variant => {
+                const selectElement = document.querySelector(`[data-source-variant="${variant}"]`);
+                
+                if (selectElement) {
+                    const parentDiv = selectElement.closest('.border.rounded-lg');
+                    
+                    if (parentDiv) {
+                        let granularContainer = document.getElementById(`granular-${variant}`);
+                        
+                        if (!granularContainer) {
+                            console.log(`Creating missing granular container for ${variant}`);
+                            
+                            granularContainer = document.createElement('div');
+                            granularContainer.id = `granular-${variant}`;
+                            granularContainer.className = 'border-t pt-3 mt-3 granular-section';
+                            granularContainer.style.minHeight = '10px';
+                            
+                            parentDiv.appendChild(granularContainer);
+                            
+                            console.log(`✓ Created granular-${variant}`);
+                        }
+                    }
+                }
+            });
+        }
+    }
+    
+    attachEventListeners() {
+        const searchInput = document.getElementById('searchInput');
+        if (searchInput) {
+            searchInput.addEventListener('input', (e) => {
+                this.searchTerm = e.target.value;
+                this.filterDFUs();
+            });
+        }
+
+        const plantLocationFilter = document.getElementById('plantLocationFilter');
+        if (plantLocationFilter) {
+            plantLocationFilter.addEventListener('change', (e) => {
+                this.filterByPlantLocation(e.target.value);
+            });
+        }
+        
+        const productionLineFilter = document.getElementById('productionLineFilter');
+        if (productionLineFilter) {
+            productionLineFilter.addEventListener('change', (e) => {
+                this.filterByProductionLine(e.target.value);
+            });
+        }
+        
+        const exportBtn = document.getElementById('exportBtn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', () => this.exportData());
+        }
+        
+        const executeBtn = document.getElementById('executeBtn');
+        if (executeBtn) {
+            executeBtn.addEventListener('click', () => this.executeTransfer(this.selectedDFU));
+        }
+        
+        const cancelBtn = document.getElementById('cancelBtn');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => this.cancelTransfer(this.selectedDFU));
+        }
+        
+        const undoTransferBtn = document.getElementById('undoTransferBtn');
+        if (undoTransferBtn) {
+            undoTransferBtn.addEventListener('click', () => this.undoTransfer(this.selectedDFU));
+        }
+        
+        const addVariantBtn = document.getElementById('addVariantBtn');
+        if (addVariantBtn) {
+            addVariantBtn.addEventListener('click', () => this.addManualVariant(this.selectedDFU));
+        }
+        
+        const cycleFileInput = document.getElementById('cycleFileInput');
+        if (cycleFileInput) {
+            cycleFileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    console.log('Cycle file selected:', file.name);
+                    this.loadVariantCycleData(file);
+                }
+            });
+        }
+        
+        const stockFileInput = document.getElementById('stockFileInput');
+        if (stockFileInput) {
+            stockFileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    console.log('Stock file selected:', file.name);
+                    this.handleStockFile(file);
+                }
+            });
+        }
+        
+        // DFU card click handlers
+        document.querySelectorAll('.dfu-card').forEach(card => {
+            card.addEventListener('click', (e) => {
+                const dfuCode = e.currentTarget.dataset.dfu;
+                this.selectDFU(dfuCode);
+            });
+        });
+        
+        // Bulk target selection handlers
+        document.querySelectorAll('[data-bulk-target]').forEach(button => {
+            button.addEventListener('click', (e) => {
+                const targetVariant = e.target.dataset.bulkTarget;
+                this.selectBulkTarget(this.selectedDFU, targetVariant);
+            });
+        });
+        
+        // Individual transfer dropdown handlers  
+        document.querySelectorAll('[data-source-variant]').forEach(select => {
+            select.addEventListener('change', (e) => {
+                const sourceVariant = e.target.dataset.sourceVariant;
+                const targetVariant = e.target.value;
+                
+                console.log(`Dropdown changed: ${sourceVariant} → ${targetVariant}`);
+                
+                if (targetVariant && targetVariant !== sourceVariant) {
+                    this.setIndividualTransfer(this.selectedDFU, sourceVariant, targetVariant);
+                    
+                    const granularSection = document.getElementById(`granular-${sourceVariant}`);
+                    console.log(`Looking for granular section: granular-${sourceVariant}`, granularSection);
+                    
+                    if (granularSection) {
+                        granularSection.innerHTML = this.renderGranularSection(sourceVariant, targetVariant);
+                        this.attachGranularEventListeners();
+                    }
+                } else if (!targetVariant) {
+                    // Clear the transfer if dropdown is set to empty
+                    this.setIndividualTransfer(this.selectedDFU, sourceVariant, '');
+                }
+            });
+        });
+        
+        this.attachGranularEventListeners();
+        
+        // Restore focus on search input after re-render
         setTimeout(() => {
             const searchInput = document.getElementById('searchInput');
-            if (searchInput) {
+            if (searchInput && document.activeElement !== searchInput && this.searchTerm) {
                 searchInput.focus();
                 // Move cursor to end of input
                 searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
@@ -636,38 +1351,15 @@ class DemandTransferApp {
                                     }).filter(Boolean).join('')}
                                 </ul>
                             ` : ''}
-                            ${this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0 ? `
-                                <p><strong>Granular Transfers:</strong></p>
-                                <ul class="list-disc list-inside ml-4 text-xs">
-                                    ${Object.keys(this.granularTransfers[this.selectedDFU]).map(sourceVariant => {
-                                        const sourceTransfers = this.granularTransfers[this.selectedDFU][sourceVariant];
-                                        return Object.keys(sourceTransfers).map(targetVariant => {
-                                            const weekTransfers = sourceTransfers[targetVariant];
-                                            const weekCount = Object.keys(weekTransfers).length;
-                                            return weekCount > 0 ? `<li>${sourceVariant} → ${targetVariant} (${weekCount} weeks)</li>` : '';
-                                        }).filter(Boolean).join('');
-                                    }).filter(Boolean).join('')}
-                                </ul>
-                            ` : ''}
                         </div>
                         <div class="flex gap-2">
-                            <button class="btn btn-success" id="executeBtn">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                                </svg>
-                                Execute Transfer
-                            </button>
-                            <button class="btn btn-secondary" id="cancelBtn">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                                Cancel
-                            </button>
+                            <button class="btn btn-success" id="executeBtn">Execute Transfer</button>
+                            <button class="btn btn-secondary" id="cancelBtn">Cancel</button>
                         </div>
                     </div>
                 `;
                 
-                // Re-attach button event listeners
+                // Re-attach button listeners
                 const executeBtn = document.getElementById('executeBtn');
                 if (executeBtn) {
                     executeBtn.addEventListener('click', () => this.executeTransfer(this.selectedDFU));
@@ -678,15 +1370,14 @@ class DemandTransferApp {
                     cancelBtn.addEventListener('click', () => this.cancelTransfer(this.selectedDFU));
                 }
             } else if (hasExecutionSummary) {
-                // Show last execution summary
                 const summary = this.lastExecutionSummary[this.selectedDFU];
                 actionButtonsContainer.innerHTML = `
                     <div class="p-3 bg-gray-50 rounded-lg">
                         <div class="text-sm text-gray-700">
-                            <h5 class="font-semibold mb-2 text-gray-800">Last Execution Summary:</h5>
+                            <h5 class="font-semibold mb-2 text-gray-800">Last Execution:</h5>
                             <p><strong>Type:</strong> ${summary.type}</p>
                             <p><strong>Time:</strong> ${summary.timestamp}</p>
-                            <p><strong>Result:</strong> ${summary.message}</p>
+                            <p><strong>Status:</strong> ${summary.message}</p>
                             ${summary.details ? `
                                 <div class="mt-2 text-xs">
                                     ${summary.details}
@@ -701,7 +1392,6 @@ class DemandTransferApp {
         }
     }
     
-        // Replace the entire addManualVariant method in script.js
     addManualVariant(dfuCode) {
         const variantCode = prompt('Enter the new variant code:');
         if (!variantCode || !variantCode.trim()) return;
@@ -766,163 +1456,67 @@ class DemandTransferApp {
         
         console.log(`Created ${newRecords.length} new records for variant ${trimmedVariant}`);
         
-        // Add records locally first for immediate UI update
-        if (newRecords.length > 0) {
-            this.rawData.push(...newRecords);
-            
-            // Save to database (for multi-user mode)
-            if (window.userName) { // Check if in multi-user mode
-                fetch('/api/addVariant', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        dfuCode: dfuStr,
-                        variantCode: trimmedVariant,
-                        newRecords: newRecords,
-                        userName: window.userName
-                    })
-                }).then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        this.showNotification(`Variant ${trimmedVariant} added successfully (${data.recordsAdded} records)`, 'success');
-                    } else {
-                        this.showNotification('Failed to save variant to database: ' + (data.error || 'Unknown error'), 'error');
-                        // Remove locally added records on failure
-                        this.rawData = this.rawData.filter(r => 
-                            !(this.toComparableString(r['DFU']) === dfuStr && 
-                                this.toComparableString(r['Product Number']) === this.toComparableString(trimmedVariant))
-                        );
-                    }
-                })
-                .catch(error => {
-                    console.error('Error saving variant:', error);
-                    this.showNotification('Error saving variant to database', 'error');
-                    // Remove locally added records on failure
-                    this.rawData = this.rawData.filter(r => 
-                        !(this.toComparableString(r['DFU']) === dfuStr && 
-                            this.toComparableString(r['Product Number']) === this.toComparableString(trimmedVariant))
-                    );
-                });
-            } else {
-                this.showNotification(`Variant ${trimmedVariant} added locally`, 'success');
-            }
-            
-            // Re-process data to show the new variant
-            this.processMultiVariantDFUs(this.rawData);
-            this.render();
-            
-            // Re-select the DFU to show the updated details
-            setTimeout(() => {
-                this.selectDFU(dfuCode);
-            }, 100);
-        } else {
-            this.showNotification('Could not create records for new variant', 'error');
-        }
+        // Add new records to rawData
+        this.rawData.push(...newRecords);
+        
+        // Re-process the data
+        this.processMultiVariantDFUs(this.rawData);
+        
+        this.showNotification(`Variant ${trimmedVariant} added successfully with ${newRecords.length} records`);
+        this.render();
     }
     
     executeTransfer(dfuCode) {
         const dfuStr = this.toComparableString(dfuCode);
+        console.log(`Executing transfer for DFU ${dfuStr}`);
+        
+        if (!this.multiVariantDFUs[dfuStr]) {
+            this.showNotification('DFU not found', 'error');
+            return;
+        }
+        
         const dfuData = this.multiVariantDFUs[dfuStr];
-        const { dfuColumn, partNumberColumn, demandColumn, calendarWeekColumn, sourceLocationColumn, weekNumberColumn } = dfuData;
+        const { dfuColumn, partNumberColumn, demandColumn, weekNumberColumn, sourceLocationColumn } = dfuData;
         
-        // IMPORTANT: Store all original variants BEFORE any modifications
-        const originalVariants = new Set();
+        // Get all records for this DFU
         const dfuRecords = this.rawData.filter(record => this.toComparableString(record[dfuColumn]) === dfuStr);
-        dfuRecords.forEach(record => {
-            originalVariants.add(this.toComparableString(record[partNumberColumn]));
-        });
-        console.log('Original variants before transfer:', Array.from(originalVariants));
         
-        let transferCount = 0;
-        const transferHistory = []; // Track all transfers for audit trail
-        const timestamp = new Date().toLocaleString('en-GB', { 
-            day: '2-digit', 
-            month: '2-digit', 
-            year: 'numeric', 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit' 
-        });
+        console.log(`Found ${dfuRecords.length} records for DFU ${dfuStr}`);
         
-        let executionType = '';
-        let executionMessage = '';
-        let executionDetails = '';
+        // Store original variants for restoration
+        const originalVariants = new Set(dfuData.variants);
         
         // Handle bulk transfer
         if (this.bulkTransfers[dfuStr]) {
             const targetVariant = this.bulkTransfers[dfuStr];
-            
-            console.log(`Executing bulk transfer for DFU ${dfuStr} to ${targetVariant}`);
-            console.log(`Found ${dfuRecords.length} records for this DFU`);
+            console.log(`Executing bulk transfer: All variants → ${targetVariant}`);
             
             dfuRecords.forEach(record => {
-                const recordPartNumber = this.toComparableString(record[partNumberColumn]);
-                if (recordPartNumber !== targetVariant) {
-                    const sourceVariant = recordPartNumber;
-                    const transferDemand = parseFloat(record[demandColumn]) || 0;
-                    
-                    const targetRecord = dfuRecords.find(r => 
-                        this.toComparableString(r[partNumberColumn]) === targetVariant && 
-                        this.toComparableString(r[calendarWeekColumn]) === this.toComparableString(record[calendarWeekColumn]) &&
-                        this.toComparableString(r[sourceLocationColumn]) === this.toComparableString(record[sourceLocationColumn])
-                    );
-                    
-                    if (targetRecord) {
-                        const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
-                        targetRecord[demandColumn] = oldDemand + transferDemand;
-                        
-                        // Add transfer history to target record
-                        const existingHistory = targetRecord['Transfer History'] || '';
-                        const newHistoryEntry = `[${sourceVariant} → ${transferDemand} @ ${timestamp}]`;
-                        const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
-                        targetRecord['Transfer History'] = existingHistory ? 
-                            `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
-                        
-                        record[demandColumn] = 0;
-                        transferCount++;
-                        
-                        transferHistory.push({
-                            from: sourceVariant,
-                            to: targetVariant,
-                            amount: transferDemand,
-                            timestamp
-                        });
-                    } else {
-                        // Change the source record to target variant
-                        const originalVariant = recordPartNumber;
-                        record[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                        
-                        // Add transfer history
-                        record['Transfer History'] = `PIPO [${originalVariant} → ${transferDemand} @ ${timestamp}]`;
-                        
-                        transferCount++;
-                        
-                        transferHistory.push({
-                            from: originalVariant,
-                            to: targetVariant,
-                            amount: transferDemand,
-                            timestamp
-                        });
-                    }
+                const currentPartNumber = this.toComparableString(record[partNumberColumn]);
+                if (currentPartNumber !== targetVariant) {
+                    record['Transfer History'] = `Bulk transferred from ${currentPartNumber} to ${targetVariant} on ${new Date().toLocaleString()}`;
+                    record[partNumberColumn] = targetVariant;
                 }
             });
             
-            delete this.bulkTransfers[dfuStr];
+            // Consolidate records after bulk transfer
+            this.consolidateRecords(dfuStr, originalVariants);
             
-            // Mark as completed transfer
+            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'bulk',
                 targetVariant: targetVariant,
-                timestamp: timestamp,
-                originalVariantCount: dfuData.variants.length,
-                transferHistory
+                timestamp: new Date().toLocaleString()
             };
             
-            executionType = 'Bulk Transfer';
-            executionMessage = `${dfuData.variants.length - 1} variants transferred to ${targetVariant}`;
-            executionDetails = `<p>All variants consolidated into: <strong>${targetVariant}</strong></p>`;
+            // Store execution summary
+            this.lastExecutionSummary[dfuStr] = {
+                type: 'Bulk Transfer',
+                message: `All variants transferred to ${targetVariant}`,
+                timestamp: new Date().toLocaleString()
+            };
             
-            this.showNotification(`Bulk transfer completed for DFU ${dfuStr}: ${executionMessage}`);
+            this.showNotification(`Bulk transfer completed for DFU ${dfuStr}: All variants → ${targetVariant}`);
         }
         
         // Handle individual transfers
@@ -931,88 +1525,50 @@ class DemandTransferApp {
             
             console.log(`Executing individual transfers for DFU ${dfuStr}`);
             console.log(`Individual transfers:`, individualTransfers);
-            console.log(`Found ${dfuRecords.length} records for this DFU`);
             
-            // Process each individual transfer
+            let transferCount = 0;
+            
             Object.keys(individualTransfers).forEach(sourceVariant => {
                 const targetVariant = individualTransfers[sourceVariant];
                 
-                console.log(`Processing transfer: ${sourceVariant} → ${targetVariant}`);
-                
-                // Only transfer if source and target are different
                 if (sourceVariant !== targetVariant) {
-                    // Find all records for this source variant
-                    const sourceRecords = dfuRecords.filter(r => 
-                        this.toComparableString(r[partNumberColumn]) === sourceVariant
-                    );
-                    
-                    console.log(`Found ${sourceRecords.length} records for source variant ${sourceVariant}`);
-                    
-                    sourceRecords.forEach(record => {
-                        const transferDemand = parseFloat(record[demandColumn]) || 0;
-                        
-                        // Try to find a matching target record with same week and location
-                        const targetRecord = dfuRecords.find(r => 
-                            this.toComparableString(r[partNumberColumn]) === targetVariant && 
-                            this.toComparableString(r[calendarWeekColumn]) === this.toComparableString(record[calendarWeekColumn]) &&
-                            this.toComparableString(r[sourceLocationColumn]) === this.toComparableString(record[sourceLocationColumn])
-                        );
-                        
-                        if (targetRecord) {
-                            // Add to existing target record
-                            const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
-                            targetRecord[demandColumn] = oldDemand + transferDemand;
-                            
-                            // Add transfer history to target record
-                            const existingHistory = targetRecord['Transfer History'] || '';
-                            const newHistoryEntry = `[${sourceVariant} → ${transferDemand} @ ${timestamp}]`;
-                            const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
-                            targetRecord['Transfer History'] = existingHistory ? 
-                                `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
-                            
-                            record[demandColumn] = 0; // Zero out source
-                            console.log(`Added ${transferDemand} demand to existing target record`);
-                        } else {
-                            // Change the source record to target variant
-                            const originalVariant = this.toComparableString(record[partNumberColumn]);
-                            record[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                            
-                            // Add transfer history
-                            record['Transfer History'] = `PIPO [${originalVariant} → ${transferDemand} @ ${timestamp}]`;
-                            
-                            console.log(`Changed record part number from ${sourceVariant} to ${targetVariant}`);
+                    dfuRecords.forEach(record => {
+                        const currentPartNumber = this.toComparableString(record[partNumberColumn]);
+                        if (currentPartNumber === sourceVariant) {
+                            record['Transfer History'] = `Transferred from ${sourceVariant} to ${targetVariant} on ${new Date().toLocaleString()}`;
+                            record[partNumberColumn] = targetVariant;
+                            transferCount++;
                         }
-                        
-                        transferHistory.push({
-                            from: sourceVariant,
-                            to: targetVariant,
-                            amount: transferDemand,
-                            timestamp
-                        });
                     });
-                    
-                    transferCount++;
                 }
             });
             
-            this.transfers[dfuStr] = {};
+            // Consolidate records after individual transfers
+            this.consolidateRecords(dfuStr, originalVariants);
             
-            // Mark as completed transfer
+            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'individual',
                 transfers: individualTransfers,
-                timestamp: timestamp,
-                transferCount: transferCount,
-                transferHistory
+                timestamp: new Date().toLocaleString()
             };
             
-            executionType = 'Individual Transfers';
-            executionMessage = `${transferCount} variant transfers executed`;
-            executionDetails = `<ul class="list-disc list-inside ml-4">
-                ${Object.keys(individualTransfers).map(src => 
-                    src !== individualTransfers[src] ? `<li>${src} → ${individualTransfers[src]}</li>` : ''
-                ).filter(Boolean).join('')}
-            </ul>`;
+            const executionMessage = Object.keys(individualTransfers)
+                .filter(src => src !== individualTransfers[src])
+                .map(src => `${src} → ${individualTransfers[src]}`)
+                .join(', ');
+            
+            // Store execution summary
+            this.lastExecutionSummary[dfuStr] = {
+                type: 'Individual Transfer',
+                message: executionMessage,
+                timestamp: new Date().toLocaleString(),
+                details: `<ul class="list-disc list-inside">${
+                    Object.keys(individualTransfers).filter(src => src !== individualTransfers[src]).map(src =>
+                        `<li>${src} → ${individualTransfers[src]}</li>`
+                    ).filter(Boolean).join('')}
+            </ul>`
+            };
             
             this.showNotification(`Individual transfers completed for DFU ${dfuStr}: ${executionMessage}`);
         }
@@ -1051,75 +1607,29 @@ class DemandTransferApp {
                             const transferAmount = weekTransfer.customQuantity !== null ? 
                                 weekTransfer.customQuantity : originalDemand;
                             
-                            console.log(`Transferring ${transferAmount} from ${sourceVariant} to ${targetVariant} for week ${weekNumber}`);
-                            
-                            // Find matching target record
-                            const targetRecord = dfuRecords.find(r => 
-                                this.toComparableString(r[partNumberColumn]) === targetVariant && 
+                            // Create or update target record
+                            let targetRecord = dfuRecords.find(r => 
+                                this.toComparableString(r[partNumberColumn]) === targetVariant &&
                                 this.toComparableString(r[weekNumberColumn]) === weekNumber &&
                                 this.toComparableString(r[sourceLocationColumn]) === sourceLocation
                             );
                             
                             if (targetRecord) {
-                                // Add to existing target record
-                                const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
-                                targetRecord[demandColumn] = oldDemand + transferAmount;
-                                
-                                // Add transfer history with proper week number format
-                                const existingHistory = targetRecord['Transfer History'] || '';
-                                const newHistoryEntry = `[W${weekNumber} ${sourceVariant} → ${transferAmount} @ ${timestamp}]`;
-                                const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
-                                targetRecord['Transfer History'] = existingHistory ? 
-                                    `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
-                                
-                                // Update source record
-                                sourceRecord[demandColumn] = originalDemand - transferAmount;
-                                
-                                // Add transfer history to source record if partial transfer
-                                if (transferAmount < originalDemand) {
-                                    const sourceExistingHistory = sourceRecord['Transfer History'] || '';
-                                    const sourceHistoryEntry = `[W${weekNumber} ${transferAmount} transferred to ${targetVariant} @ ${timestamp}]`;
-                                    const sourcePipoPrefix = sourceExistingHistory.startsWith('PIPO') ? '' : 'PIPO ';
-                                    sourceRecord['Transfer History'] = sourceExistingHistory ? 
-                                        `${sourceExistingHistory} ${sourceHistoryEntry}` : `${sourcePipoPrefix}${sourceHistoryEntry}`;
-                                }
-                                
+                                const currentTargetDemand = parseFloat(targetRecord[demandColumn]) || 0;
+                                targetRecord[demandColumn] = currentTargetDemand + transferAmount;
+                                targetRecord['Transfer History'] = `Received ${transferAmount} from ${sourceVariant} (granular) on ${new Date().toLocaleString()}`;
                             } else {
-                                // Create new record by modifying source
-                                if (transferAmount === originalDemand) {
-                                    // Transfer full amount - change part number
-                                    const originalVariant = this.toComparableString(sourceRecord[partNumberColumn]);
-                                    sourceRecord[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                                    sourceRecord['Transfer History'] = `PIPO [W${weekNumber} ${originalVariant} → ${transferAmount} @ ${timestamp}]`;
-                                } else {
-                                    // Partial transfer - need to create new record and update source
-                                    const newRecord = { ...sourceRecord };
-                                    newRecord[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                                    newRecord[demandColumn] = transferAmount;
-                                    newRecord['Transfer History'] = `PIPO [W${weekNumber} ${sourceVariant} → ${transferAmount} @ ${timestamp}]`;
-                                    
-                                    // Update source record
-                                    sourceRecord[demandColumn] = originalDemand - transferAmount;
-                                    
-                                    // Add transfer history to source record
-                                    const sourceExistingHistory = sourceRecord['Transfer History'] || '';
-                                    const sourceHistoryEntry = `[W${weekNumber} ${transferAmount} transferred to ${targetVariant} @ ${timestamp}]`;
-                                    const sourcePipoPrefix = sourceExistingHistory.startsWith('PIPO') ? '' : 'PIPO ';
-                                    sourceRecord['Transfer History'] = sourceExistingHistory ? 
-                                        `${sourceExistingHistory} ${sourceHistoryEntry}` : `${sourcePipoPrefix}${sourceHistoryEntry}`;
-                                    
-                                    // Add new record
-                                    this.rawData.push(newRecord);
-                                }
+                                // Create new record for target
+                                targetRecord = { ...sourceRecord };
+                                targetRecord[partNumberColumn] = targetVariant;
+                                targetRecord[demandColumn] = transferAmount;
+                                targetRecord['Transfer History'] = `Received ${transferAmount} from ${sourceVariant} (granular) on ${new Date().toLocaleString()}`;
+                                this.rawData.push(targetRecord);
                             }
                             
-                            transferHistory.push({
-                                from: sourceVariant,
-                                to: targetVariant,
-                                amount: transferAmount,
-                                week: weekNumber,
-                                timestamp
-                            });
+                            // Update source record
+                            sourceRecord[demandColumn] = originalDemand - transferAmount;
+                            sourceRecord['Transfer History'] = `Transferred ${transferAmount} to ${targetVariant} (granular) on ${new Date().toLocaleString()}`;
                             
                             granularTransferCount++;
                         }
@@ -1127,41 +1637,29 @@ class DemandTransferApp {
                 });
             });
             
-            this.granularTransfers[dfuStr] = {};
-            
-            // Mark as completed transfer
+            // Mark as completed
             this.completedTransfers[dfuStr] = {
                 type: 'granular',
-                timestamp: timestamp,
                 transferCount: granularTransferCount,
-                transferHistory
+                timestamp: new Date().toLocaleString()
             };
             
-            executionType = 'Granular Transfers';
-            executionMessage = `${granularTransferCount} week-level transfers executed`;
-            executionDetails = `<p>Specific weeks transferred between variants</p>`;
+            // Store execution summary
+            this.lastExecutionSummary[dfuStr] = {
+                type: 'Granular Transfer',
+                message: `${granularTransferCount} week-specific transfers completed`,
+                timestamp: new Date().toLocaleString()
+            };
             
-            this.showNotification(`Granular transfers completed for DFU ${dfuStr}: ${executionMessage}`);
+            this.showNotification(`Granular transfer completed for DFU ${dfuStr}: ${granularTransferCount} weeks transferred`);
         }
-
-        // Store execution summary
-        this.lastExecutionSummary[dfuStr] = {
-            type: executionType,
-            timestamp: timestamp,
-            message: executionMessage,
-            details: executionDetails
-        };
-
-        // CRITICAL: Consolidate records FIRST before recalculating UI data
-        console.log('Step 1: Consolidating records...');
-        this.consolidateRecords(dfuStr, originalVariants);
         
-        // THEN clear cached data and recalculate
-        console.log('Step 2: Clearing cached data...');
-        this.multiVariantDFUs = {};
-        this.filteredDFUs = {};
+        // Clear transfer settings
+        delete this.transfers[dfuStr];
+        delete this.bulkTransfers[dfuStr];
+        delete this.granularTransfers[dfuStr];
         
-        console.log('Step 3: Recalculating variant demands...');
+        console.log('Step 3: Reprocessing all DFUs...');
         this.processMultiVariantDFUs(this.rawData);
         
         console.log('Step 4: Updating UI...');
@@ -1220,89 +1718,41 @@ class DemandTransferApp {
         // Create a map of consolidated records
         const consolidatedMap = new Map();
         
-        dfuRecords.forEach((record) => {
+        dfuRecords.forEach(record => {
             const partNumber = this.toComparableString(record[partNumberColumn]);
-            const calendarWeek = this.toComparableString(record[calendarWeekColumn]);
             const weekNumber = this.toComparableString(record[weekNumberColumn]);
             const sourceLocation = this.toComparableString(record[sourceLocationColumn]);
-            const demand = parseFloat(record[demandColumn]) || 0;
-            const transferHistory = record['Transfer History'] || '';
+            const key = `${partNumber}_${weekNumber}_${sourceLocation}`;
             
-            // Create a unique key for this combination using weekNumber instead of calendarWeek
-            const key = `${partNumber}|${weekNumber}|${sourceLocation}`;
-            
-            if (consolidatedMap.has(key)) {
-                // Add to existing consolidated record
-                const existing = consolidatedMap.get(key);
-                existing[demandColumn] = (parseFloat(existing[demandColumn]) || 0) + demand;
-                
-                // Consolidate transfer histories
-                if (transferHistory && existing['Transfer History']) {
-                    existing['Transfer History'] = `${existing['Transfer History']} ${transferHistory}`;
-                } else if (transferHistory) {
-                    existing['Transfer History'] = transferHistory;
-                }
-                
-                console.log(`Consolidated ${demand} into existing record for ${partNumber}, total now: ${existing[demandColumn]}`);
+            if (!consolidatedMap.has(key)) {
+                consolidatedMap.set(key, { ...record });
             } else {
-                // Create new consolidated record
-                const consolidatedRecord = { ...record };
-                consolidatedRecord[demandColumn] = demand;
-                if (transferHistory) {
-                    consolidatedRecord['Transfer History'] = transferHistory;
+                const existing = consolidatedMap.get(key);
+                const currentDemand = parseFloat(existing[demandColumn]) || 0;
+                const additionalDemand = parseFloat(record[demandColumn]) || 0;
+                existing[demandColumn] = currentDemand + additionalDemand;
+                
+                // Update transfer history
+                if (record['Transfer History']) {
+                    existing['Transfer History'] = (existing['Transfer History'] || '') + '; ' + record['Transfer History'];
                 }
-                consolidatedMap.set(key, consolidatedRecord);
             }
         });
         
-        // If keepZeroVariants is true, ensure all original part numbers have at least one record
-        if (this.keepZeroVariants) {
-            allPartNumbers.forEach(partNumber => {
-                // Check if this part number has any records in the consolidated map
-                let hasRecord = false;
-                consolidatedMap.forEach((record, key) => {
-                    if (key.startsWith(`${partNumber}|`)) {
-                        hasRecord = true;
-                    }
-                });
-                
-                // If no record exists for this part number, create one with 0 demand
-                if (!hasRecord) {
-                    // Use the first record as a template
-                    const templateRecord = dfuRecords.find(r => this.toComparableString(r[partNumberColumn]) === partNumber) || dfuRecords[0];
-                    if (templateRecord) {
-                        const zeroRecord = { ...templateRecord };
-                        // Preserve the original data type for Product Number
-                        zeroRecord[partNumberColumn] = isNaN(partNumber) ? partNumber : Number(partNumber);
-                        zeroRecord[demandColumn] = 0;
-                        zeroRecord['Transfer History'] = 'All demand transferred';
-                        
-                        // Create a key for the first week/location
-                        const key = `${partNumber}|${this.toComparableString(zeroRecord[weekNumberColumn])}|${this.toComparableString(zeroRecord[sourceLocationColumn])}`;
-                        consolidatedMap.set(key, zeroRecord);
-                        
-                        console.log(`Created zero-demand record for ${partNumber} to keep variant visible`);
-                    }
-                }
-            });
-        }
+        // Replace old DFU records with consolidated ones
+        this.rawData = this.rawData.filter(record => 
+            this.toComparableString(record[dfuColumn]) !== dfuStr
+        );
         
-        console.log(`Consolidated into ${consolidatedMap.size} unique records`);
-        
-        // Remove old DFU records from rawData
-        this.rawData = this.rawData.filter(record => this.toComparableString(record[dfuColumn]) !== dfuStr);
-        
-        // Add consolidated records back to rawData
-        consolidatedMap.forEach((record) => {
+        consolidatedMap.forEach(record => {
             this.rawData.push(record);
         });
         
-        const newDfuRecords = this.rawData.filter(record => this.toComparableString(record[dfuColumn]) === dfuStr);
-        console.log(`After consolidation: ${newDfuRecords.length} records for DFU ${dfuStr}`);
+        console.log(`Consolidated ${dfuRecords.length} records into ${consolidatedMap.size} records for DFU ${dfuStr}`);
         
-        // Log the consolidated variants
+        // Log variant summary
         const variantSummary = {};
-        newDfuRecords.forEach(record => {
+        this.rawData.filter(r => this.toComparableString(r[dfuColumn]) === dfuStr).forEach(record => {
             const partNumber = this.toComparableString(record[partNumberColumn]);
             const demand = parseFloat(record[demandColumn]) || 0;
             
@@ -1392,732 +1842,8 @@ class DemandTransferApp {
         // Re-process the data to show the variants again with original quantities
         this.processMultiVariantDFUs(this.rawData);
         
-        this.showNotification(`Transfer undone for DFU ${dfuStr}. All original variants and quantities restored.`, 'success');
-        
-        // Force complete UI refresh
-        const currentSelection = this.selectedDFU;
-        this.selectedDFU = null;
+        this.showNotification(`Transfer undone for DFU ${dfuStr}. Original data restored.`);
         this.render();
-        
-        // Restore selection after UI refresh
-        setTimeout(() => {
-            this.selectedDFU = currentSelection;
-            this.render();
-        }, 100);
-    }
-    
-    async exportData() {
-        try {
-            // Create a copy of the data with properly formatted dates
-            const formattedData = this.rawData.map(record => {
-                const formattedRecord = { ...record };
-                
-                // Fix Calendar.week date based on Week Number
-                if (formattedRecord['Week Number']) {
-                    const weekNumberStr = String(formattedRecord['Week Number']);
-                    
-                    // Extract week and year from format like "2_2026" or just "2"
-                    let weekNum, year;
-                    
-                    if (weekNumberStr.includes('_')) {
-                        // Format: "2_2026"
-                        const parts = weekNumberStr.split('_');
-                        weekNum = parseInt(parts[0]);
-                        year = parseInt(parts[1]);
-                    } else {
-                        // Format: just "2" - try to get year from existing Calendar.week
-                        weekNum = parseInt(weekNumberStr);
-                        year = 2025; // Default fallback
-                        
-                        if (formattedRecord['Calendar.week']) {
-                            const existingDate = new Date(formattedRecord['Calendar.week']);
-                            if (!isNaN(existingDate.getTime()) && existingDate.getFullYear() > 2000) {
-                                year = existingDate.getFullYear();
-                            }
-                        }
-                    }
-                    
-                    if (!isNaN(weekNum) && weekNum >= 1 && weekNum <= 52 && !isNaN(year)) {
-                        const date = this.getDateFromWeekNumber(year, weekNum);
-                        
-                        // Format as YYYY-MM-DD
-                        const yearStr = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        formattedRecord['Calendar.week'] = `${yearStr}-${month}-${day}`;
-                    }
-                }
-                
-                return formattedRecord;
-            });
-            
-            const wb = XLSX.utils.book_new();
-            const ws = XLSX.utils.json_to_sheet(formattedData);
-            XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
-            XLSX.writeFile(wb, 'Updated_Demand_Data.xlsx');
-            this.showNotification('Data exported successfully');
-        } catch (error) {
-            console.error('Error exporting data:', error);
-            this.showNotification('Error exporting data: ' + error.message, 'error');
-        }
-    }
-    
-    render() {
-        const app = document.getElementById('app');
-        
-        if (!this.isProcessed) {
-            app.innerHTML = `
-                <div class="max-w-6xl mx-auto p-6 bg-white min-h-screen">
-                    <div class="text-center py-12">
-                        <div class="bg-blue-50 rounded-lg p-8 inline-block">
-                            <div class="w-12 h-12 mb-4 mx-auto bg-blue-600 rounded-full flex items-center justify-center">
-                                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                                </svg>
-                            </div>
-                            <h2 class="text-xl font-semibold mb-2">Upload Demand Data</h2>
-                            <p class="text-gray-600 mb-4">
-                                Upload your Excel file with the new "Total Demand" format
-                            </p>
-                            
-                            ${this.isLoading ? `
-                                <div class="text-blue-600">
-                                    <div class="loading-spinner mb-2"></div>
-                                    <p>Processing file...</p>
-                                </div>
-                            ` : `
-                                <div class="space-y-4">
-                                    <div>
-                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="fileInput">
-                                        <p class="text-sm text-gray-500 mt-2">
-                                            Supported formats: .xlsx, .xls
-                                        </p>
-                                    </div>
-                                    
-                                    <div class="text-left text-sm text-gray-600 bg-gray-50 p-4 rounded-lg">
-                                        <p class="font-medium mb-2">Expected columns in your Excel file:</p>
-                                        <ul class="list-disc list-inside space-y-1">
-                                            <li><strong>DFU</strong> - DFU codes</li>
-                                            <li><strong>Product Number</strong> - Part/product codes</li>
-                                            <li><strong>weekly fcst</strong> - Demand/forecast values</li>
-                                            <li><strong>PartDescription</strong> - Product descriptions</li>
-                                            <li><strong>Production Plant</strong> - Plant location codes</li>
-                                            <li><strong>Production Line</strong> - Production line codes</li>
-                                            <li><strong>Week Number</strong> - Week number values</li>
-                                            <li><strong>Source Location</strong> - Source location codes</li>
-                                        </ul>
-                                    </div>
-                                    
-                                    <div class="border-t pt-4 mt-4">
-                                        <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Upload Variant Cycle Dates</h3>
-                                        <input type="file" accept=".xlsx,.xls" class="file-input" id="cycleFileInput">
-                                        <p class="text-xs text-gray-500 mt-1">
-                                            Upload file with DFU, Part Code, SOS, and EOS columns
-                                        </p>
-                                    </div>
-                                </div>
-                            `}
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            if (!this.isLoading) {
-                const fileInput = document.getElementById('fileInput');
-                fileInput.addEventListener('change', (e) => this.handleFileUpload(e));
-                
-                const cycleFileInput = document.getElementById('cycleFileInput');
-                if (cycleFileInput) {
-                    cycleFileInput.addEventListener('change', (e) => {
-                        const file = e.target.files[0];
-                        if (file) {
-                            this.loadVariantCycleData(file);
-                        }
-                    });
-                }
-            }
-            
-            return;
-        }
-        
-        const totalDFUs = Object.keys(this.filteredDFUs).length;
-        const multiVariantCount = Object.keys(this.filteredDFUs).filter(dfu => !this.filteredDFUs[dfu].isSingleVariant).length;
-        
-        app.innerHTML = `
-            <div>
-                <h1 class="text-3xl font-bold text-gray-800 mb-2">DFU Demand Transfer Management</h1>
-                <p class="text-gray-600">
-                    Managing ${totalDFUs} DFUs (${multiVariantCount} with multiple variants, ${totalDFUs - multiVariantCount} single variant)
-                </p>
-            </div>
-
-                <div class="flex gap-4 mb-6 flex-responsive">
-                    <div class="relative flex-1">
-                        <svg class="absolute left-3 top-3 h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                        <input 
-                            type="text" 
-                            placeholder="Search DFU codes or part codes..." 
-                            value="${this.searchTerm}"
-                            class="search-input"
-                            id="searchInput"
-                        >
-                    </div>
-                    <div class="relative">
-                        <select class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="plantLocationFilter">
-                            <option value="">All Plant Locations</option>
-                            ${this.availablePlantLocations.map(location => `
-                                <option value="${location}" ${this.selectedPlantLocation === location ? 'selected' : ''}>
-                                    Plant ${location}
-                                </option>
-                            `).join('')}
-                        </select>
-                    </div>
-                    <div class="relative">
-                        <select class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" id="productionLineFilter">
-                            <option value="">All Production Lines</option>
-                            ${this.availableProductionLines.map(line => `
-                                <option value="${line}" ${this.selectedProductionLine === line ? 'selected' : ''}>
-                                    Line ${line}
-                                </option>
-                            `).join('')}
-                        </select>
-                    </div>
-                    ${this.hasVariantCycleData ? `
-                        <span class="inline-flex items-center px-3 py-2 text-sm text-green-700 bg-green-100 rounded-lg">
-                            <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            Cycle Data Loaded
-                        </span>
-                    ` : `
-                        <label class="btn btn-secondary cursor-pointer">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                            </svg>
-                            Load Cycle Dates
-                            <input type="file" accept=".xlsx,.xls" class="hidden" id="cycleFileInput">
-                        </label>
-                    `}
-                    <button class="btn btn-success" id="exportBtn">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        Export Updated Data
-                    </button>
-                </div>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 grid-responsive">
-                    <div class="bg-gray-50 rounded-lg p-6">
-                        <h3 class="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                            </svg>
-                            All DFUs (${totalDFUs})
-                        </h3>
-                        <div class="relative" style="height: 580px;">
-                            <div class="absolute inset-x-0 top-0 h-4 bg-gradient-to-b from-gray-50 to-transparent pointer-events-none z-10"></div>
-                            <div class="absolute inset-x-0 bottom-0 h-4 bg-gradient-to-t from-gray-50 to-transparent pointer-events-none z-10"></div>
-                            <div class="space-y-2 h-full overflow-y-auto pr-1 scrollbar-custom" style="padding-top: 16px; padding-bottom: 16px;">
-                                ${Object.keys(this.filteredDFUs).map(dfuCode => {
-                                const dfuData = this.filteredDFUs[dfuCode];
-                                if (!dfuData || !dfuData.variants) return '';
-                                
-                                return `
-                                    <div class="dfu-card ${this.selectedDFU === dfuCode ? 'selected' : ''}" data-dfu="${dfuCode}">
-                                        <div class="flex justify-between items-start">
-                                            <div>
-                                                <h4 class="font-medium text-gray-800">DFU: ${dfuCode}</h4>
-                                                <p class="text-sm text-gray-600">
-                                                    ${dfuData.plantLocations && dfuData.plantLocations.length > 0 ? `Plant${dfuData.plantLocations.length > 1 ? 's' : ''}: ${dfuData.plantLocations.join(', ')} • ` : ''}
-                                                    ${dfuData.productionLines && dfuData.productionLines.length > 0 ? `Line${dfuData.productionLines.length > 1 ? 's' : ''}: ${dfuData.productionLines.join(', ')} • ` : ''}
-                                                    ${dfuData.variants.length} variant${dfuData.variants.length > 1 ? 's' : ''}
-                                                    ${dfuData.isSingleVariant ? ' (single)' : ''}
-                                                    ${dfuData.isCompleted ? ' (transfer completed)' : ''}
-                                                </p>
-                                            </div>
-                                            <div class="text-right">
-                                                ${dfuData.isCompleted ? `
-                                                    <span class="inline-flex items-center gap-1 text-green-600 text-sm">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                                                        </svg>
-                                                        Done
-                                                    </span>
-                                                ` : (this.transfers[dfuCode] && Object.keys(this.transfers[dfuCode]).length > 0) || this.bulkTransfers[dfuCode] || (this.granularTransfers[dfuCode] && Object.keys(this.granularTransfers[dfuCode]).length > 0) ? `
-                                                    <span class="inline-flex items-center gap-1 text-green-600 text-sm">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                                        </svg>
-                                                        Ready
-                                                    </span>
-                                                ` : dfuData.isSingleVariant ? `
-                                                    <span class="text-blue-600 text-sm">Single</span>
-                                                ` : `
-                                                    <span class="text-amber-600 text-sm">Pending</span>
-                                                `}
-                                            </div>
-                                        </div>
-                                    </div>
-                                `;
-                                }).join('')}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="bg-white border border-gray-200 rounded-lg p-6">
-                        ${this.selectedDFU && this.multiVariantDFUs[this.selectedDFU] ? `
-                            <div>
-                                <div class="flex justify-between items-center mb-4">
-                                    <h3 class="font-semibold text-gray-800">
-                                        DFU: ${this.selectedDFU}
-                                        ${this.multiVariantDFUs[this.selectedDFU].plantLocations && this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 0 ? 
-                                            ` (Plant${this.multiVariantDFUs[this.selectedDFU].plantLocations.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].plantLocations.join(', ')})` : ''}
-                                        ${this.multiVariantDFUs[this.selectedDFU].productionLines && this.multiVariantDFUs[this.selectedDFU].productionLines.length > 0 ? 
-                                            ` (Line${this.multiVariantDFUs[this.selectedDFU].productionLines.length > 1 ? 's' : ''}: ${this.multiVariantDFUs[this.selectedDFU].productionLines.join(', ')})` : ''}
-                                        - Variant Details
-                                        ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
-                                            <span class="ml-2 px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">
-                                                ✓ Transfer Complete
-                                            </span>
-                                        ` : ''}
-                                    </h3>
-                                    ${!this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
-                                        <button class="btn btn-primary text-sm" id="addVariantBtn">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                                            </svg>
-                                            Add Variant
-                                        </button>
-                                    ` : ''}
-                                </div>
-                                
-                                ${this.multiVariantDFUs[this.selectedDFU].isCompleted ? `
-                                    <!-- Completed Transfer Summary -->
-                                    <div class="mb-6 p-4 bg-green-50 rounded-lg border border-green-200">
-                                        <div class="flex justify-between items-start">
-                                            <div class="flex-1">
-                                                <h4 class="font-semibold text-green-800 mb-3">✓ Transfer Completed</h4>
-                                                <div class="text-sm text-green-700">
-                                                    <p><strong>Type:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'bulk' ? 'Bulk Transfer' : this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'granular' ? 'Granular Transfer' : 'Individual Transfers'}</p>
-                                                    <p><strong>Date:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.timestamp}</p>
-                                                    ${this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'bulk' ? `
-                                                        <p><strong>Target Variant:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.targetVariant}</p>
-                                                        <p><strong>Variants Consolidated:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.originalVariantCount - 1} → 1</p>
-                                                    ` : this.multiVariantDFUs[this.selectedDFU].completionInfo.type === 'granular' ? `
-                                                        <p><strong>Granular Transfers:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.transferCount} week-level transfers completed</p>
-                                                    ` : `
-                                                        <p><strong>Individual Transfers:</strong> ${this.multiVariantDFUs[this.selectedDFU].completionInfo.transferCount} completed</p>
-                                                    `}
-                                                </div>
-                                            </div>
-                                            <button class="px-3 py-1 text-xs bg-orange-100 text-orange-800 rounded hover:bg-orange-200 transition-colors" 
-                                                    id="undoTransferBtn"
-                                                    title="Undo this transfer and allow modifications">
-                                                <svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path>
-                                                </svg>
-                                                Undo
-                                            </button>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- Current Variant Status -->
-                                    <div class="mb-6">
-                                        <h4 class="font-semibold text-gray-800 mb-3">Current Variant Status</h4>
-                                        <div class="space-y-3">
-                                            ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
-                                                const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
-                                                
-                                                return `
-                                                    <div class="border rounded-lg p-3 bg-white">
-                                                        <div class="flex justify-between items-center">
-                                                            <div class="flex-1">
-                                                                <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
-                                                                <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
-                                                                <p class="text-sm text-gray-600">${demandData?.recordCount || 0} records</p>
-                                                            </div>
-                                                            <div class="text-right">
-                                                                <p class="font-medium text-gray-800">${this.formatNumber(demandData?.totalDemand || 0)}</p>
-                                                                <p class="text-sm text-gray-600">consolidated demand</p>
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                `;
-                                            }).join('')}
-                                        </div>
-                                    </div>
-                                ` : `
-                                    <!-- Bulk Transfer Section -->
-                                    <div class="mb-6 p-4 bg-purple-50 rounded-lg border">
-                                        <h4 class="font-semibold text-purple-800 mb-3">Bulk Transfer (All Variants → One Target)</h4>
-                                        <p class="text-sm text-purple-600 mb-3">Transfer all variants to a single target variant:</p>
-                                        <div class="flex flex-wrap gap-2">
-                                            ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
-                                                const isSelected = this.bulkTransfers[this.selectedDFU] === variant;
-                                                return `
-                                                    <button 
-                                                        class="px-3 py-1 rounded-full text-sm font-medium transition-all ${isSelected ? 'bg-purple-600 text-white' : 'bg-purple-100 text-purple-800 hover:bg-purple-200'}"
-                                                        data-bulk-target="${variant}"
-                                                    >
-                                                        ${variant}
-                                                    </button>
-                                                `;
-                                            }).join('')}
-                                        </div>
-                                        ${this.bulkTransfers[this.selectedDFU] ? `
-                                            <p class="text-sm text-purple-700 mt-2">
-                                                → All variants will transfer to: <strong>${this.bulkTransfers[this.selectedDFU]}</strong>
-                                            </p>
-                                        ` : ''}
-                                    </div>
-                                    
-                                    <!-- Individual Transfer Section -->
-                                    ${this.renderIndividualTransferSection()}
-                                    
-                                    <!-- Action Buttons Container -->
-                                    <div class="action-buttons-container">
-                                        ${this.renderActionButtons()}
-                                    </div>
-                                `}
-                            </div>
-                        ` : `
-                            <div class="text-center py-12 text-gray-500">
-                                Select a DFU from the list to view variant details
-                            </div>
-                        `}
-                    </div>
-                </div>
-
-                <div class="mt-6 bg-blue-50 rounded-lg p-4">
-                    <h3 class="font-semibold text-blue-800 mb-2">How to Use</h3>
-                    <ul class="text-sm text-blue-700 space-y-1">
-                        <li><strong>View All DFUs:</strong> All DFUs are now shown, including single-variant ones</li>
-                        <li><strong>Add Variant:</strong> Click "Add Variant" to manually add a new variant to any DFU</li>
-                        <li><strong>Filter:</strong> Use dropdowns to filter by Production Plant or Production Line</li>
-                        <li><strong>Bulk Transfer:</strong> Click a purple button to transfer all variants to that target</li>
-                        <li><strong>Individual Transfer:</strong> Use dropdowns to specify where each variant should go</li>
-                        <li><strong>Granular Transfer:</strong> Select specific weeks to transfer partial demand</li>
-                        <li><strong>Execute:</strong> Click "Execute Transfer" to apply your chosen transfers</li>
-                        <li><strong>Export:</strong> Export the updated data when you're done with all transfers</li>
-                    </ul>
-                </div>
-            </div>
-        `;
-        
-        this.attachEventListeners();
-        this.ensureGranularContainers();
-    }
-    
-    renderIndividualTransferSection() {
-        if (!this.selectedDFU || !this.multiVariantDFUs[this.selectedDFU]) return '';
-        
-        return `
-            <div class="mb-6">
-                <h4 class="font-semibold text-gray-800 mb-3">Individual Transfers (Variant → Specific Target)</h4>
-                <div class="space-y-4">
-                    ${this.multiVariantDFUs[this.selectedDFU].variants.map(variant => {
-                        const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[variant];
-                        const currentTransfer = this.transfers[this.selectedDFU]?.[variant];
-                        
-                        return `
-                            <div class="border rounded-lg p-4 bg-gray-50">
-                                <div class="flex justify-between items-center mb-3">
-                                    <div class="flex-1">
-                                        <h5 class="font-medium text-gray-800">Part: ${variant}</h5>
-                                        <p class="text-xs text-gray-500 mb-1 max-w-md break-words">${demandData?.partDescription || 'Description not available'}</p>
-                                        <p class="text-sm text-gray-600">${demandData?.recordCount || 0} records • ${this.formatNumber(demandData?.totalDemand || 0)} total demand</p>
-                                        ${(() => {
-                                            const cycleData = this.getCycleDataForVariant(this.selectedDFU, variant);
-                                            if (cycleData) {
-                                                return `
-                                                    <div class="mt-1 text-xs space-y-0.5">
-                                                        <p class="text-blue-600"><strong>SOS:</strong> ${cycleData.sos}</p>
-                                                        <p class="text-red-600"><strong>EOS:</strong> ${cycleData.eos}</p>
-                                                        ${cycleData.comments ? `<p class="text-gray-600 italic"><strong>Comments:</strong> ${cycleData.comments}</p>` : ''}
-                                                    </div>
-                                                `;
-                                            }
-                                            return '';
-                                        })()}
-                                    </div>
-                                </div>
-                                
-                                <div class="flex items-center gap-2 text-sm mb-3">
-                                    <span class="text-gray-600">Transfer all to:</span>
-                                    <select class="px-2 py-1 border rounded text-sm" data-source-variant="${variant}" id="select-${variant}">
-                                        <option value="">Select target...</option>
-                                        ${this.multiVariantDFUs[this.selectedDFU].variants.map(targetVariant => `
-                                            <option value="${targetVariant}" ${currentTransfer === targetVariant ? 'selected' : ''}>
-                                                ${targetVariant}${targetVariant === variant ? ' (self)' : ''}
-                                            </option>
-                                        `).join('')}
-                                    </select>
-                                    ${currentTransfer && currentTransfer !== variant ? `
-                                        <span class="text-green-600 text-sm">→ ${currentTransfer}</span>
-                                    ` : ''}
-                                </div>
-                                
-                                <!-- Granular section placeholder -->
-                                <div id="granular-${variant}"></div>
-                            </div>
-                        `;
-                    }).join('')}
-                </div>
-            </div>
-        `;
-    }
-    
-    renderActionButtons() {
-        if (!this.selectedDFU) return '';
-        
-        const hasTransfers = ((this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0) || 
-                             this.bulkTransfers[this.selectedDFU] || 
-                             (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
-        
-        const hasExecutionSummary = this.lastExecutionSummary[this.selectedDFU];
-        
-        if (hasTransfers) {
-            return `
-                <div class="p-3 bg-blue-50 rounded-lg">
-                    <div class="text-sm text-blue-800 mb-3">
-                        ${this.bulkTransfers[this.selectedDFU] ? `
-                            <p><strong>Bulk Transfer:</strong> All variants → ${this.bulkTransfers[this.selectedDFU]}</p>
-                        ` : ''}
-                        ${this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0 ? `
-                            <p><strong>Individual Transfers:</strong></p>
-                            <ul class="list-disc list-inside ml-4">
-                                ${Object.keys(this.transfers[this.selectedDFU]).map(sourceVariant => {
-                                    const targetVariant = this.transfers[this.selectedDFU][sourceVariant];
-                                    return sourceVariant !== targetVariant ? 
-                                        `<li>${sourceVariant} → ${targetVariant}</li>` : '';
-                                }).filter(Boolean).join('')}
-                            </ul>
-                        ` : ''}
-                    </div>
-                    <div class="flex gap-2">
-                        <button class="btn btn-success" id="executeBtn">Execute Transfer</button>
-                        <button class="btn btn-secondary" id="cancelBtn">Cancel</button>
-                    </div>
-                </div>
-            `;
-        } else if (hasExecutionSummary) {
-            return `
-                <div class="p-3 bg-gray-50 rounded-lg">
-                    <div class="text-sm text-gray-700">
-                        <h5 class="font-semibold mb-2 text-gray-800">Last Execution Summary:</h5>
-                        <p><strong>Type:</strong> ${this.lastExecutionSummary[this.selectedDFU].type}</p>
-                        <p><strong>Time:</strong> ${this.lastExecutionSummary[this.selectedDFU].timestamp}</p>
-                        <p><strong>Result:</strong> ${this.lastExecutionSummary[this.selectedDFU].message}</p>
-                    </div>
-                </div>
-            `;
-        }
-        
-        return '';
-    }
-    
-    ensureGranularContainers() {
-        if (this.selectedDFU && this.multiVariantDFUs[this.selectedDFU]) {
-            console.log('=== FORCE CREATING GRANULAR CONTAINERS ===');
-            
-            this.multiVariantDFUs[this.selectedDFU].variants.forEach(variant => {
-                const selectElement = document.querySelector(`[data-source-variant="${variant}"]`);
-                
-                if (selectElement) {
-                    const parentDiv = selectElement.closest('.border.rounded-lg');
-                    
-                    if (parentDiv) {
-                        let granularContainer = document.getElementById(`granular-${variant}`);
-                        
-                        if (!granularContainer) {
-                            console.log(`Creating missing granular container for ${variant}`);
-                            
-                            granularContainer = document.createElement('div');
-                            granularContainer.id = `granular-${variant}`;
-                            granularContainer.className = 'border-t pt-3 mt-3 granular-section';
-                            granularContainer.style.minHeight = '10px';
-                            
-                            parentDiv.appendChild(granularContainer);
-                            
-                            console.log(`✓ Created granular-${variant}`);
-                        }
-                    }
-                }
-            });
-        }
-    }
-    
-    attachEventListeners() {
-        const searchInput = document.getElementById('searchInput');
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                this.searchTerm = e.target.value;
-                this.filterDFUs();
-            });
-        }
-
-        const plantLocationFilter = document.getElementById('plantLocationFilter');
-        if (plantLocationFilter) {
-            plantLocationFilter.addEventListener('change', (e) => {
-                this.filterByPlantLocation(e.target.value);
-            });
-        }
-        
-        const productionLineFilter = document.getElementById('productionLineFilter');
-        if (productionLineFilter) {
-            productionLineFilter.addEventListener('change', (e) => {
-                this.filterByProductionLine(e.target.value);
-            });
-        }
-        
-        const exportBtn = document.getElementById('exportBtn');
-        if (exportBtn) {
-            exportBtn.addEventListener('click', () => this.exportData());
-        }
-        
-        const executeBtn = document.getElementById('executeBtn');
-        if (executeBtn) {
-            executeBtn.addEventListener('click', () => this.executeTransfer(this.selectedDFU));
-        }
-        
-        const cancelBtn = document.getElementById('cancelBtn');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', () => this.cancelTransfer(this.selectedDFU));
-        }
-        
-        const undoTransferBtn = document.getElementById('undoTransferBtn');
-        if (undoTransferBtn) {
-            undoTransferBtn.addEventListener('click', () => this.undoTransfer(this.selectedDFU));
-        }
-        
-        const addVariantBtn = document.getElementById('addVariantBtn');
-        if (addVariantBtn) {
-            addVariantBtn.addEventListener('click', () => this.addManualVariant(this.selectedDFU));
-        }
-        
-        const cycleFileInput = document.getElementById('cycleFileInput');
-        if (cycleFileInput) {
-            cycleFileInput.addEventListener('change', (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    console.log('Cycle file selected:', file.name);
-                    this.loadVariantCycleData(file);
-                }
-            });
-        }
-        
-        // DFU card click handlers
-        document.querySelectorAll('.dfu-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                const dfuCode = e.currentTarget.dataset.dfu;
-                this.selectDFU(dfuCode);
-            });
-        });
-        
-        // Bulk target selection handlers
-        document.querySelectorAll('[data-bulk-target]').forEach(button => {
-            button.addEventListener('click', (e) => {
-                const targetVariant = e.target.dataset.bulkTarget;
-                this.selectBulkTarget(this.selectedDFU, targetVariant);
-            });
-        });
-        
-        // Individual transfer dropdown handlers  
-        document.querySelectorAll('[data-source-variant]').forEach(select => {
-            select.addEventListener('change', (e) => {
-                const sourceVariant = e.target.dataset.sourceVariant;
-                const targetVariant = e.target.value;
-                
-                console.log(`Dropdown changed: ${sourceVariant} → ${targetVariant}`);
-                
-                if (targetVariant && targetVariant !== sourceVariant) {
-                    this.setIndividualTransfer(this.selectedDFU, sourceVariant, targetVariant);
-                    
-                    const granularSection = document.getElementById(`granular-${sourceVariant}`);
-                    console.log(`Looking for granular section: granular-${sourceVariant}`, granularSection);
-                    
-                    if (granularSection) {
-                        const demandData = this.multiVariantDFUs[this.selectedDFU].variantDemand[sourceVariant];
-                        
-                        if (demandData && demandData.weeklyRecords) {
-                            // Render granular controls
-                            granularSection.innerHTML = this.renderGranularControls(sourceVariant, targetVariant, demandData.weeklyRecords);
-                            
-                            setTimeout(() => {
-                                this.attachGranularEventListeners();
-                            }, 100);
-                        }
-                    }
-                    
-                    this.updateActionButtonsOnly();
-                    
-                } else {
-                    if (this.transfers[this.selectedDFU]) {
-                        delete this.transfers[this.selectedDFU][sourceVariant];
-                    }
-                    
-                    const granularSection = document.getElementById(`granular-${sourceVariant}`);
-                    if (granularSection) {
-                        granularSection.innerHTML = '';
-                    }
-                    
-                    this.updateActionButtonsOnly();
-                }
-            });
-        });
-        
-        this.attachGranularEventListeners();
-    }
-    
-    renderGranularControls(sourceVariant, targetVariant, weeklyRecords) {
-        return `
-            <div class="space-y-2 max-h-40 overflow-y-auto">
-                ${Object.keys(weeklyRecords).map(weekKey => {
-                    const weekData = weeklyRecords[weekKey];
-                    const isSelected = this.granularTransfers[this.selectedDFU] && 
-                        this.granularTransfers[this.selectedDFU][sourceVariant] && 
-                        this.granularTransfers[this.selectedDFU][sourceVariant][targetVariant] && 
-                        this.granularTransfers[this.selectedDFU][sourceVariant][targetVariant][weekKey] && 
-                        this.granularTransfers[this.selectedDFU][sourceVariant][targetVariant][weekKey].selected;
-                    
-                    const customQty = isSelected ? 
-                        this.granularTransfers[this.selectedDFU][sourceVariant][targetVariant][weekKey].customQuantity : null;
-                    
-                    return `
-                        <div class="bg-white rounded border p-2 text-xs">
-                            <div class="flex items-center gap-3">
-                                <input type="checkbox" 
-                                       class="w-4 h-4" 
-                                       ${isSelected ? 'checked' : ''}
-                                       data-granular-toggle
-                                       data-dfu="${this.selectedDFU}"
-                                       data-source="${sourceVariant}"
-                                       data-target="${targetVariant}"
-                                       data-week="${weekKey}"
-                                >
-                                <div class="flex-1">
-                                    <span class="font-medium">Week ${weekData.weekNumber} (Loc: ${weekData.sourceLocation})</span>
-                                    <span class="text-gray-600 ml-2">${this.formatNumber(weekData.demand)} demand</span>
-                                </div>
-                                <input type="number" 
-                                       class="w-20 px-2 py-1 text-xs border rounded" 
-                                       placeholder="${weekData.demand}"
-                                       value="${customQty !== null ? customQty : ''}"
-                                       ${!isSelected ? 'disabled' : ''}
-                                       data-granular-qty
-                                       data-dfu="${this.selectedDFU}"
-                                       data-source="${sourceVariant}"
-                                       data-target="${targetVariant}"
-                                       data-week="${weekKey}"
-                                >
-                            </div>
-                        </div>
-                    `;
-                }).join('')}
-            </div>
-        `;
     }
     
     attachGranularEventListeners() {
