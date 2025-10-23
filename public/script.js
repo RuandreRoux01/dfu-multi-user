@@ -700,12 +700,12 @@ class DemandTransferApp {
                                         <span class="font-medium">${weekData.sourceLocation}</span>
                                     </div>
                                     <div>
-                                        <span class="text-gray-600">Date:</span>
-                                        <span class="font-medium">${weekData.calendarWeek || 'N/A'}</span>
+                                        <span class="text-gray-600">Demand:</span>
+                                        <span class="font-medium">${this.formatNumber(weekData.originalQuantity)}</span>
                                     </div>
                                 </div>
                                 <div class="flex items-center gap-2">
-                                    <span class="text-sm text-gray-600">Demand:</span>
+                                    <span class="text-sm text-gray-600">Transfer:</span>
                                     <input 
                                         type="number" 
                                         class="w-24 px-2 py-1 border rounded text-sm"
@@ -809,11 +809,18 @@ class DemandTransferApp {
             
         } else if (this.transfers[dfuStr] && Object.keys(this.transfers[dfuStr]).length > 0) {
             const individualTransfers = this.transfers[dfuStr];
+            const granularTransfers = this.granularTransfers[dfuStr] || {};
             let transferCount = 0;
             const transferHistory = [];
             
             Object.keys(individualTransfers).forEach(sourceVariant => {
                 const targetVariant = individualTransfers[sourceVariant];
+                
+                // Skip if this variant has granular transfers configured
+                if (granularTransfers[sourceVariant] && Object.keys(granularTransfers[sourceVariant]).length > 0) {
+                    console.log(`Skipping individual transfer for ${sourceVariant} - has granular transfers`);
+                    return;
+                }
                 
                 if (sourceVariant !== targetVariant) {
                     const sourceRecords = dfuRecords.filter(r => 
@@ -881,7 +888,10 @@ class DemandTransferApp {
             executionMessage = `${transferCount} variant transfers executed`;
             this.showNotification(`Individual transfers completed for DFU ${dfuStr}: ${executionMessage}`);
             
-        } else if (this.granularTransfers[dfuStr] && Object.keys(this.granularTransfers[dfuStr]).length > 0) {
+        }
+        
+        // Handle granular transfers (check separately, can coexist with individual)
+        if (this.granularTransfers[dfuStr] && Object.keys(this.granularTransfers[dfuStr]).length > 0) {
             const granularTransfers = this.granularTransfers[dfuStr];
             let granularTransferCount = 0;
             
@@ -914,6 +924,7 @@ class DemandTransferApp {
                             );
                             
                             if (targetRecord) {
+                                // Add to existing target record
                                 const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
                                 targetRecord[demandColumn] = oldDemand + transferAmount;
                                 const existingHistory = targetRecord['Transfer History'] || '';
@@ -921,13 +932,23 @@ class DemandTransferApp {
                                 const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
                                 targetRecord['Transfer History'] = existingHistory ? 
                                     `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
+                            } else {
+                                // Create new target record
+                                const newTargetRecord = { ...sourceRecord };
+                                newTargetRecord[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
+                                newTargetRecord[demandColumn] = transferAmount;
+                                newTargetRecord['Transfer History'] = `PIPO [from ${sourceVariant}: ${transferAmount} @ ${timestamp}]`;
+                                this.rawData.push(newTargetRecord);
                             }
                             
+                            // Reduce source demand by transfer amount
                             sourceRecord[demandColumn] = originalDemand - transferAmount;
                             if (!sourceRecord['Transfer History']) {
                                 sourceRecord['Transfer History'] = '';
                             }
-                            sourceRecord['Transfer History'] += ` PIPO [→ ${targetVariant}: -${transferAmount} @ ${timestamp}]`;
+                            const sourceEntry = `[→ ${targetVariant}: -${transferAmount} @ ${timestamp}]`;
+                            sourceRecord['Transfer History'] = sourceRecord['Transfer History'] ? 
+                                `${sourceRecord['Transfer History']} PIPO ${sourceEntry}` : `PIPO ${sourceEntry}`;
                             
                             granularTransferCount++;
                         }
@@ -941,10 +962,13 @@ class DemandTransferApp {
                 transferCount: granularTransferCount
             };
             
-            delete this.granularTransfers[dfuStr];
             executionType = 'Granular Transfer';
             executionMessage = `${granularTransferCount} week-specific transfers executed`;
-            this.showNotification(executionMessage, 'success');
+            
+            if (granularTransferCount > 0) {
+                this.showNotification(executionMessage, 'success');
+                delete this.granularTransfers[dfuStr];
+            }
         }
         
         this.lastExecutionSummary[dfuStr] = {
@@ -1249,6 +1273,30 @@ class DemandTransferApp {
                             const dfuData = this.filteredDFUs[dfuCode];
                             if (!dfuData || !dfuData.variants) return '';
                             
+                            // Check if has valid transfers
+                            const hasValidIndividualTransfers = this.transfers[dfuCode] && 
+                                Object.values(this.transfers[dfuCode]).some(t => t && t !== '');
+                            
+                            // Check if has selected granular transfers
+                            let hasSelectedGranularTransfers = false;
+                            if (this.granularTransfers[dfuCode]) {
+                                for (const sourceVariant of Object.keys(this.granularTransfers[dfuCode])) {
+                                    const sourceTargets = this.granularTransfers[dfuCode][sourceVariant];
+                                    for (const targetVariant of Object.keys(sourceTargets)) {
+                                        const weeks = sourceTargets[targetVariant];
+                                        if (Object.values(weeks).some(w => w.selected)) {
+                                            hasSelectedGranularTransfers = true;
+                                            break;
+                                        }
+                                    }
+                                    if (hasSelectedGranularTransfers) break;
+                                }
+                            }
+                            
+                            const hasTransfersConfigured = hasValidIndividualTransfers || 
+                                this.bulkTransfers[dfuCode] || 
+                                hasSelectedGranularTransfers;
+                            
                             return `
                                 <div class="dfu-card ${this.selectedDFU === dfuCode ? 'selected' : ''}" data-dfu="${dfuCode}">
                                     <div class="flex justify-between items-start">
@@ -1539,9 +1587,25 @@ class DemandTransferApp {
         const hasValidTransfers = this.transfers[this.selectedDFU] && 
             Object.values(this.transfers[this.selectedDFU]).some(t => t && t !== '');
         
+        // Check if there are any selected granular transfers
+        let hasGranularTransfers = false;
+        if (this.granularTransfers[this.selectedDFU]) {
+            for (const sourceVariant of Object.keys(this.granularTransfers[this.selectedDFU])) {
+                const sourceTargets = this.granularTransfers[this.selectedDFU][sourceVariant];
+                for (const targetVariant of Object.keys(sourceTargets)) {
+                    const weeks = sourceTargets[targetVariant];
+                    if (Object.values(weeks).some(w => w.selected)) {
+                        hasGranularTransfers = true;
+                        break;
+                    }
+                }
+                if (hasGranularTransfers) break;
+            }
+        }
+        
         const hasTransfers = (hasValidTransfers || 
                              this.bulkTransfers[this.selectedDFU] || 
-                             (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
+                             hasGranularTransfers);
         
         if (hasTransfers) {
             return `
@@ -1549,7 +1613,7 @@ class DemandTransferApp {
                     <div class="text-sm text-blue-800 mb-3">
                         ${this.bulkTransfers[this.selectedDFU] ? 
                             `<p>✓ Bulk transfer to <strong>${this.bulkTransfers[this.selectedDFU]}</strong> is ready</p>` : 
-                            this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0 ?
+                            hasGranularTransfers ?
                             `<p>✓ Granular transfers configured</p>` :
                             `<p>✓ Individual transfers configured</p>`
                         }
