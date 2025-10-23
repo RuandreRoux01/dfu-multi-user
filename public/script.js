@@ -463,6 +463,7 @@ class DemandTransferApp {
                 const totalDemand = partCodeRecords.reduce((sum, r) => sum + (parseFloat(r[demandColumn]) || 0), 0);
                 const partDescription = partCodeRecords[0] ? (partCodeRecords[0][partDescriptionColumn] || '') : '';
                 
+                // Keep all variants, even those with 0 demand (important after transfers)
                 variantDemand[partCode] = {
                     totalDemand,
                     recordCount: partCodeRecords.length,
@@ -765,6 +766,7 @@ class DemandTransferApp {
                     );
                     
                     if (targetRecord) {
+                        // Add to existing target record
                         const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
                         targetRecord[demandColumn] = oldDemand + transferDemand;
                         const existingHistory = targetRecord['Transfer History'] || '';
@@ -772,11 +774,23 @@ class DemandTransferApp {
                         const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
                         targetRecord['Transfer History'] = existingHistory ? 
                             `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
+                        
+                        // Keep source record but set demand to 0
                         record[demandColumn] = 0;
+                        const sourceHistory = record['Transfer History'] || '';
+                        const sourceEntry = `[→ ${targetVariant}: -${transferDemand} @ ${timestamp}]`;
+                        record['Transfer History'] = sourceHistory ? 
+                            `${sourceHistory} ${sourceEntry}` : `PIPO ${sourceEntry}`;
                     } else {
-                        const originalVariant = this.toComparableString(record[partNumberColumn]);
-                        record[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                        record['Transfer History'] = `PIPO [${originalVariant} → ${transferDemand} @ ${timestamp}]`;
+                        // Create new target record (copy from source but with target part number)
+                        const newTargetRecord = { ...record };
+                        newTargetRecord[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
+                        newTargetRecord['Transfer History'] = `PIPO [from ${sourceVariant}: ${transferDemand} @ ${timestamp}]`;
+                        this.rawData.push(newTargetRecord);
+                        
+                        // Keep source record but set demand to 0
+                        record[demandColumn] = 0;
+                        record['Transfer History'] = `PIPO [→ ${targetVariant}: -${transferDemand} @ ${timestamp}]`;
                     }
                 });
             });
@@ -815,6 +829,7 @@ class DemandTransferApp {
                         );
                         
                         if (targetRecord) {
+                            // Add to existing target record
                             const oldDemand = parseFloat(targetRecord[demandColumn]) || 0;
                             targetRecord[demandColumn] = oldDemand + transferDemand;
                             const existingHistory = targetRecord['Transfer History'] || '';
@@ -822,11 +837,23 @@ class DemandTransferApp {
                             const pipoPrefix = existingHistory.startsWith('PIPO') ? '' : 'PIPO ';
                             targetRecord['Transfer History'] = existingHistory ? 
                                 `${existingHistory} ${newHistoryEntry}` : `${pipoPrefix}${newHistoryEntry}`;
+                            
+                            // Keep source record but set demand to 0
                             record[demandColumn] = 0;
+                            const sourceHistory = record['Transfer History'] || '';
+                            const sourceEntry = `[→ ${targetVariant}: -${transferDemand} @ ${timestamp}]`;
+                            record['Transfer History'] = sourceHistory ? 
+                                `${sourceHistory} ${sourceEntry}` : `PIPO ${sourceEntry}`;
                         } else {
-                            const originalVariant = this.toComparableString(record[partNumberColumn]);
-                            record[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
-                            record['Transfer History'] = `PIPO [${originalVariant} → ${transferDemand} @ ${timestamp}]`;
+                            // Create new target record (copy from source but with target part number)
+                            const newTargetRecord = { ...record };
+                            newTargetRecord[partNumberColumn] = isNaN(targetVariant) ? targetVariant : Number(targetVariant);
+                            newTargetRecord['Transfer History'] = `PIPO [from ${sourceVariant}: ${transferDemand} @ ${timestamp}]`;
+                            this.rawData.push(newTargetRecord);
+                            
+                            // Keep source record but set demand to 0
+                            record[demandColumn] = 0;
+                            record['Transfer History'] = `PIPO [→ ${targetVariant}: -${transferDemand} @ ${timestamp}]`;
                         }
                         
                         transferHistory.push({
