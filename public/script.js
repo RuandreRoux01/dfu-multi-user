@@ -40,6 +40,13 @@ class DemandTransferApp {
     init() {
         console.log('🚀 DFU Demand Transfer App v2.21.0 - Build: 2025-10-23-network-stock-calc');
         console.log('📊 Added Network Stock + Total Demand and Selected Demand calculations');
+        
+        // Load supply chain data from server on init
+        this.loadSupplyChainDataFromServer();
+        
+        // Setup socket listeners for real-time updates
+        this.setupSupplyChainSocketListeners();
+        
         this.render();
         this.attachEventListeners();
     }
@@ -91,6 +98,10 @@ class DemandTransferApp {
             
             this.hasStockData = true;
             console.log('Stock data processed:', Object.keys(this.stockData).length, 'unique parts');
+            
+            // Save to server for multi-user sync
+            await this.saveSupplyChainDataToServer('stock', this.stockData);
+            
             this.showNotification('Stock (SOH) data loaded successfully', 'success');
             this.render();
         } catch (error) {
@@ -162,6 +173,9 @@ class DemandTransferApp {
             console.log('Total records with quantity:', processedCount);
             console.log('Sample processed data:', Object.entries(this.openSupplyData).slice(0, 3));
             
+            // Save to server for multi-user sync
+            await this.saveSupplyChainDataToServer('openSupply', this.openSupplyData);
+            
             this.showNotification(`Open Supply data loaded: ${processedCount} records processed`, 'success');
             this.render();
         } catch (error) {
@@ -198,6 +212,10 @@ class DemandTransferApp {
             
             this.hasTransitData = true;
             console.log('Stock in Transit data processed:', Object.keys(this.transitData).length, 'unique parts');
+            
+            // Save to server for multi-user sync
+            await this.saveSupplyChainDataToServer('transit', this.transitData);
+            
             this.showNotification('Stock in Transit data loaded successfully', 'success');
             this.render();
         } catch (error) {
@@ -221,6 +239,93 @@ class DemandTransferApp {
             total,
             hasData: this.hasStockData || this.hasOpenSupplyData || this.hasTransitData
         };
+    }
+    
+    // Save supply chain data to server
+    async saveSupplyChainDataToServer(type, data) {
+        try {
+            const response = await fetch('/api/upload-supply-chain', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    type,
+                    data,
+                    userName: window.userName || 'Unknown'
+                })
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                console.log(`[SYNC] ${type} data saved to server:`, result.itemCount, 'items');
+            } else {
+                console.error('[SYNC] Error saving to server:', result.error);
+            }
+        } catch (error) {
+            console.error('[SYNC] Error saving supply chain data:', error);
+        }
+    }
+    
+    // Load supply chain data from server
+    async loadSupplyChainDataFromServer() {
+        try {
+            const response = await fetch('/api/session/data');
+            const result = await response.json();
+            
+            if (result.success && result.session.supplyChainData) {
+                const { stockData, openSupplyData, transitData } = result.session.supplyChainData;
+                
+                if (stockData && Object.keys(stockData).length > 0) {
+                    this.stockData = stockData;
+                    this.hasStockData = true;
+                    console.log('[SYNC] Loaded stock data from server:', Object.keys(stockData).length, 'items');
+                }
+                
+                if (openSupplyData && Object.keys(openSupplyData).length > 0) {
+                    this.openSupplyData = openSupplyData;
+                    this.hasOpenSupplyData = true;
+                    console.log('[SYNC] Loaded open supply data from server:', Object.keys(openSupplyData).length, 'items');
+                }
+                
+                if (transitData && Object.keys(transitData).length > 0) {
+                    this.transitData = transitData;
+                    this.hasTransitData = true;
+                    console.log('[SYNC] Loaded transit data from server:', Object.keys(transitData).length, 'items');
+                }
+                
+                if (this.hasStockData || this.hasOpenSupplyData || this.hasTransitData) {
+                    this.render();
+                }
+            }
+        } catch (error) {
+            console.error('[SYNC] Error loading supply chain data:', error);
+        }
+    }
+    
+    // Setup socket listeners for real-time supply chain updates
+    setupSupplyChainSocketListeners() {
+        if (typeof io === 'undefined' || !window.socket) return;
+        
+        window.socket.on('supplyChainDataUpdated', (data) => {
+            console.log(`[SOCKET] Supply chain data updated by ${data.uploadedBy}:`, data.type);
+            
+            if (data.type === 'stock') {
+                this.stockData = data.data;
+                this.hasStockData = true;
+                this.showNotification(`Stock data updated by ${data.uploadedBy}`, 'info');
+            } else if (data.type === 'openSupply') {
+                this.openSupplyData = data.data;
+                this.hasOpenSupplyData = true;
+                this.showNotification(`Open Supply data updated by ${data.uploadedBy}`, 'info');
+            } else if (data.type === 'transit') {
+                this.transitData = data.data;
+                this.hasTransitData = true;
+                this.showNotification(`Transit data updated by ${data.uploadedBy}`, 'info');
+            }
+            
+            this.render();
+        });
     }
     
     // Calculate Network Stock + Total Demand for a variant
