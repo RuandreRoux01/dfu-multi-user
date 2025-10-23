@@ -1462,7 +1462,7 @@ class DemandTransferApp {
                                 <div class="grid grid-cols-2 gap-3 mb-3">
                                     <div class="p-3 bg-orange-50 border border-orange-300 rounded-lg">
                                         <p class="text-xs text-orange-700 mb-1 font-semibold">Network Stock + Total Demand</p>
-                                        <p class="text-2xl font-bold text-orange-900" id="network-calc-${variant}">
+                                        <p class="text-2xl font-bold ${networkCalc && networkCalc.hasSupplyData ? (networkCalc.result < 0 ? 'text-red-600' : 'text-green-600') : 'text-orange-900'}" id="network-calc-${variant}">
                                             ${networkCalc && networkCalc.hasSupplyData ? this.formatNumber(networkCalc.result) : '-'}
                                         </p>
                                         ${networkCalc && networkCalc.hasSupplyData ? `
