@@ -111,23 +111,57 @@ class DemandTransferApp {
             
             console.log(`Open Supply file loaded: ${data.length} records`);
             
+            // Debug: Show available columns
+            if (data.length > 0) {
+                console.log('Available columns in Open Supply file:', Object.keys(data[0]));
+                console.log('Sample row:', data[0]);
+            }
+            
             this.openSupplyData = {};
+            let processedCount = 0;
+            
             data.forEach(row => {
-                const partCode = this.toComparableString(row['Product Number'] || row['ProductNumber'] || row['PartCode'] || row['Part Code']);
-                const openSupply = parseFloat(row['Receipt Quantity'] || row['Requirements Quantity'] || row['OpenSupply'] || 0);
+                // Try multiple column name variations for part code
+                const partCode = this.toComparableString(
+                    row['Product Number'] || 
+                    row['ProductNumber'] || 
+                    row['PartCode'] || 
+                    row['Part Code'] ||
+                    row['Material'] ||
+                    row['Material Number']
+                );
                 
-                if (partCode) {
+                // Try multiple column name variations for quantity
+                const openSupply = parseFloat(
+                    row['Receipt Quantity'] || 
+                    row['Requirements Quantity'] || 
+                    row['ReceiptQuantity'] ||
+                    row['RequirementsQuantity'] ||
+                    row['OpenSupply'] || 
+                    row['Open Supply'] ||
+                    row['Quantity'] ||
+                    row['Qty'] ||
+                    row['Order Quantity'] ||
+                    row['OrderQuantity'] ||
+                    0
+                );
+                
+                if (partCode && openSupply !== 0) {
                     if (this.openSupplyData[partCode]) {
                         this.openSupplyData[partCode] += openSupply;
                     } else {
                         this.openSupplyData[partCode] = openSupply;
                     }
+                    processedCount++;
                 }
             });
             
             this.hasOpenSupplyData = true;
             console.log('Open Supply data processed:', Object.keys(this.openSupplyData).length, 'unique parts');
-            this.showNotification('Open Supply data loaded successfully', 'success');
+            console.log('Total records with quantity:', processedCount);
+            console.log('Sample processed data:', Object.entries(this.openSupplyData).slice(0, 3));
+            
+            this.showNotification(`Open Supply data loaded: ${processedCount} records processed`, 'success');
             this.render();
         } catch (error) {
             console.error('Error loading Open Supply file:', error);
