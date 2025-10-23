@@ -116,36 +116,31 @@ app.post('/api/session/join', async (req, res) => {
 app.get('/api/session/data', async (req, res) => {
     try {
         const session = await db.collection('sessions').findOne({ _id: TEAM_SESSION_ID });
+        const completedTransfers = await getCompletedTransfers();
         
-        if (!session) {
-            return res.json({ 
-                success: true,
-                session: { 
-                    dataUploaded: false,
-                    rawData: [],
-                    supplyChainData: {
-                        stockData: {},
-                        openSupplyData: {},
-                        transitData: {}
-                    }
-                }
-            });
+        let multiVariantDFUs = {};
+        if (session?.rawData?.length > 0) {
+            multiVariantDFUs = processMultiVariantDFUs(session.rawData);
         }
         
-        res.json({ 
+        res.json({
             success: true,
             session: {
-                dataUploaded: session.rawData && session.rawData.length > 0,
-                rawData: session.rawData || [],
-                originalRawData: session.originalRawData || [],
-                completedTransfers: session.completedTransfers || {},
-                variantCycleData: session.variantCycleData || null,
-                hasVariantCycleData: session.hasVariantCycleData || false,
-                supplyChainData: session.supplyChainData || {
-                    stockData: {},
-                    openSupplyData: {},
-                    transitData: {}
-                }
+                name: 'Team Session',
+                dataUploaded: session?.dataUploaded || false,
+                hasVariantCycleData: session?.hasVariantCycleData || false
+            },
+            // Return data at root level for loadTeamData() compatibility
+            rawData: session?.rawData || [],
+            originalRawData: session?.originalRawData || [],
+            multiVariantDFUs,
+            completedTransfers,
+            variantCycleData: session?.variantCycleData || {},
+            hasVariantCycleData: session?.hasVariantCycleData || false,
+            supplyChainData: session?.supplyChainData || {
+                stockData: {},
+                openSupplyData: {},
+                transitData: {}
             }
         });
     } catch (error) {
@@ -153,6 +148,86 @@ app.get('/api/session/data', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Helper function to get completed transfers
+async function getCompletedTransfers() {
+    try {
+        const transfers = await db.collection('transfers').find({ 
+            sessionId: TEAM_SESSION_ID 
+        }).toArray();
+        
+        const result = {};
+        transfers.forEach(t => {
+            if (!t.isPlaceholder) {
+                result[t.dfuCode] = {
+                    type: t.type || 'individual',
+                    timestamp: t.timestamp,
+                    completedBy: t.completedBy
+                };
+            }
+        });
+        
+        return result;
+    } catch (error) {
+        console.error('[COMPLETED TRANSFERS]', error);
+        return {};
+    }
+}
+
+// Helper function to process multi-variant DFUs
+function processMultiVariantDFUs(rawData) {
+    const grouped = {};
+    
+    rawData.forEach(record => {
+        const dfuCode = record['DFU'];
+        const partNumber = record['Product Number'] || record['Part Number'];
+        const partDescription = record['PartDescription'] || '';
+        
+        if (!grouped[dfuCode]) {
+            grouped[dfuCode] = {
+                records: [],
+                variants: new Set(),
+                partDescriptions: {}
+            };
+        }
+        
+        grouped[dfuCode].records.push(record);
+        if (partNumber) {
+            grouped[dfuCode].variants.add(partNumber);
+            grouped[dfuCode].partDescriptions[partNumber] = partDescription;
+        }
+    });
+    
+    const allDFUs = {};
+    Object.keys(grouped).forEach(dfuCode => {
+        const variants = Array.from(grouped[dfuCode].variants);
+        const variantDemand = {};
+        variants.forEach(variant => {
+            const variantRecords = grouped[dfuCode].records.filter(r => 
+                (r['Product Number'] || r['Part Number']) === variant
+            );
+            
+            const totalDemand = variantRecords.reduce((sum, r) => 
+                sum + parseFloat(r['weekly fcst'] || 0), 0
+            );
+            
+            variantDemand[variant] = {
+                totalDemand,
+                recordCount: variantRecords.length,
+                description: grouped[dfuCode].partDescriptions[variant] || ''
+            };
+        });
+        
+        allDFUs[dfuCode] = {
+            variants,
+            recordCount: grouped[dfuCode].records.length,
+            variantDemand,
+            isSingleVariant: variants.length === 1
+        };
+    });
+    
+    return allDFUs;
+}
 
 // Upload demand data file
 app.post('/api/upload', upload.single('file'), async (req, res) => {

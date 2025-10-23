@@ -530,59 +530,49 @@
                 const response = await fetch('/api/session/data');
                 const data = await response.json();
                 
+                console.log('[LOAD TEAM DATA] Received:', data);
+                
                 if (data.rawData && data.rawData.length > 0) {
                     appInstance.rawData = data.rawData;
-                    appInstance.originalRawData = JSON.parse(JSON.stringify(data.rawData));
-                    originalRawDataBackup = JSON.parse(JSON.stringify(data.rawData));
+                    appInstance.originalRawData = data.originalRawData || JSON.parse(JSON.stringify(data.rawData));
                     
-                    if (data.completedTransfers) {
-                        appInstance.completedTransfers = data.completedTransfers;
+                    // Load supply chain data
+                    if (data.supplyChainData) {
+                        appInstance.stockData = data.supplyChainData.stockData || {};
+                        appInstance.openSupplyData = data.supplyChainData.openSupplyData || {};
+                        appInstance.transitData = data.supplyChainData.transitData || {};
                         
-                        Object.keys(data.completedTransfers).forEach(dfuCode => {
-                            if (!appInstance.transfers) appInstance.transfers = {};
-                            appInstance.transfers[dfuCode] = true;
+                        appInstance.hasStockData = Object.keys(appInstance.stockData).length > 0;
+                        appInstance.hasOpenSupplyData = Object.keys(appInstance.openSupplyData).length > 0;
+                        appInstance.hasTransitData = Object.keys(appInstance.transitData).length > 0;
+                        
+                        console.log('[LOAD TEAM DATA] Loaded supply chain data:', {
+                            stock: Object.keys(appInstance.stockData).length,
+                            openSupply: Object.keys(appInstance.openSupplyData).length,
+                            transit: Object.keys(appInstance.transitData).length
                         });
                     }
                     
-                    if (data.hasVariantCycleData && data.variantCycleData) {
-                        appInstance.variantCycleDates = data.variantCycleData;
-                        appInstance.hasVariantCycleData = true;
-                    } else {
-                        appInstance.variantCycleDates = {};
-                        appInstance.hasVariantCycleData = false;
+                    if (data.completedTransfers) {
+                        appInstance.completedTransfers = data.completedTransfers;
                     }
                     
-                    preserveScrollPosition(() => {
-                        appInstance.processMultiVariantDFUs(data.rawData);
-                        appInstance.isProcessed = true;
-                        appInstance.render();
-                    });
-                } else {
-                    if (appInstance) {
-                        appInstance.variantCycleDates = {};
-                        appInstance.hasVariantCycleData = false;
-                        appInstance.render();
+                    if (data.variantCycleData) {
+                        appInstance.variantCycleDates = data.variantCycleData;
+                        appInstance.hasVariantCycleData = data.hasVariantCycleData || false;
                     }
+                    
+                    appInstance.processMultiVariantDFUs(data.rawData);
+                    appInstance.isProcessed = true;
+                    appInstance.render();
+                    
+                    console.log('[LOAD TEAM DATA] Data loaded and rendered successfully');
+                } else {
+                    console.log('[LOAD TEAM DATA] No data available');
                 }
             } catch (error) {
-                console.error('Error loading data:', error);
-            }
-        }
-        
-        async function clearAllData() {
-            if (!confirm('Clear all data? This cannot be undone.')) return;
-            
-            try {
-                await fetch('/api/clear', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userName })
-                });
-                
-                showNotification('All data cleared', 'warning');
-                setTimeout(() => window.location.reload(), 1000);
-            } catch (error) {
-                showNotification('Failed to clear data', 'error');
+                console.error('[LOAD TEAM DATA] Error:', error);
+                showNotification('Error loading data: ' + error.message, 'error');
             }
         }
     </script>
