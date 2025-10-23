@@ -518,19 +518,43 @@ class DemandTransferApp {
     }
     
     setIndividualTransfer(dfuCode, sourceVariant, targetVariant) {
-        if (!this.transfers[dfuCode]) {
-            this.transfers[dfuCode] = {};
-        }
-        this.transfers[dfuCode][sourceVariant] = targetVariant;
-        
-        if (!this.granularTransfers[dfuCode]) {
-            this.granularTransfers[dfuCode] = {};
-        }
-        if (!this.granularTransfers[dfuCode][sourceVariant]) {
-            this.granularTransfers[dfuCode][sourceVariant] = {};
-        }
-        if (!this.granularTransfers[dfuCode][sourceVariant][targetVariant]) {
-            this.granularTransfers[dfuCode][sourceVariant][targetVariant] = {};
+        if (!targetVariant || targetVariant === '' || targetVariant === sourceVariant) {
+            // Clear the transfer if empty or self-transfer
+            if (this.transfers[dfuCode]) {
+                delete this.transfers[dfuCode][sourceVariant];
+                
+                // Clean up empty objects
+                if (Object.keys(this.transfers[dfuCode]).length === 0) {
+                    delete this.transfers[dfuCode];
+                }
+            }
+            
+            // Clear granular transfers for this variant
+            if (this.granularTransfers[dfuCode]?.[sourceVariant]) {
+                delete this.granularTransfers[dfuCode][sourceVariant];
+                
+                // Clean up empty objects
+                if (Object.keys(this.granularTransfers[dfuCode]).length === 0) {
+                    delete this.granularTransfers[dfuCode];
+                }
+            }
+        } else {
+            // Set the transfer
+            if (!this.transfers[dfuCode]) {
+                this.transfers[dfuCode] = {};
+            }
+            this.transfers[dfuCode][sourceVariant] = targetVariant;
+            
+            // Initialize granular transfers structure
+            if (!this.granularTransfers[dfuCode]) {
+                this.granularTransfers[dfuCode] = {};
+            }
+            if (!this.granularTransfers[dfuCode][sourceVariant]) {
+                this.granularTransfers[dfuCode][sourceVariant] = {};
+            }
+            if (!this.granularTransfers[dfuCode][sourceVariant][targetVariant]) {
+                this.granularTransfers[dfuCode][sourceVariant][targetVariant] = {};
+            }
         }
         
         this.render();
@@ -581,10 +605,16 @@ class DemandTransferApp {
             const container = document.getElementById(`granular-${variant}`);
             const targetVariant = this.transfers[this.selectedDFU]?.[variant];
             
-            if (container && targetVariant && targetVariant !== variant) {
-                const granularHtml = this.renderGranularTransferSection(variant, targetVariant);
-                container.innerHTML = granularHtml;
-                this.attachGranularEventListeners();
+            if (container) {
+                // Only show granular section if there's a valid target selected
+                if (targetVariant && targetVariant !== variant && targetVariant !== '') {
+                    const granularHtml = this.renderGranularTransferSection(variant, targetVariant);
+                    container.innerHTML = granularHtml;
+                    this.attachGranularEventListeners();
+                } else {
+                    // Clear the container if no valid target
+                    container.innerHTML = '';
+                }
             }
         });
     }
@@ -1213,7 +1243,7 @@ class DemandTransferApp {
                                                     </svg>
                                                     Done
                                                 </span>
-                                            ` : (this.transfers[dfuCode] && Object.keys(this.transfers[dfuCode]).length > 0) || this.bulkTransfers[dfuCode] || (this.granularTransfers[dfuCode] && Object.keys(this.granularTransfers[dfuCode]).length > 0) ? `
+                                            ` : (this.transfers[dfuCode] && Object.keys(this.transfers[dfuCode]).length > 0 && Object.values(this.transfers[dfuCode]).some(t => t && t !== '')) || this.bulkTransfers[dfuCode] || (this.granularTransfers[dfuCode] && Object.keys(this.granularTransfers[dfuCode]).length > 0) ? `
                                                 <span class="inline-flex items-center gap-1 text-green-600 text-sm">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -1427,7 +1457,7 @@ class DemandTransferApp {
                                 </div>
                             </div>
                             
-                            ${currentTransfer && currentTransfer !== variant ? `
+                            ${currentTransfer && currentTransfer !== variant && currentTransfer !== '' ? `
                                 <!-- Network Stock + Total Demand Calculation Box -->
                                 <div class="grid grid-cols-2 gap-3 mb-3">
                                     <div class="p-3 bg-orange-50 border border-orange-300 rounded-lg">
@@ -1462,7 +1492,7 @@ class DemandTransferApp {
                                         </option>
                                     `).join('')}
                                 </select>
-                                ${currentTransfer && currentTransfer !== variant ? `
+                                ${currentTransfer && currentTransfer !== variant && currentTransfer !== '' ? `
                                     <span class="text-green-600 text-sm">→ ${currentTransfer}</span>
                                 ` : ''}
                             </div>
@@ -1479,7 +1509,10 @@ class DemandTransferApp {
     renderActionButtons() {
         if (!this.selectedDFU) return '';
         
-        const hasTransfers = ((this.transfers[this.selectedDFU] && Object.keys(this.transfers[this.selectedDFU]).length > 0) || 
+        const hasValidTransfers = this.transfers[this.selectedDFU] && 
+            Object.values(this.transfers[this.selectedDFU]).some(t => t && t !== '');
+        
+        const hasTransfers = (hasValidTransfers || 
                              this.bulkTransfers[this.selectedDFU] || 
                              (this.granularTransfers[this.selectedDFU] && Object.keys(this.granularTransfers[this.selectedDFU]).length > 0));
         
@@ -1580,9 +1613,8 @@ class DemandTransferApp {
                 const sourceVariant = e.target.dataset.sourceVariant;
                 const targetVariant = e.target.value;
                 
-                if (targetVariant && targetVariant !== sourceVariant) {
-                    this.setIndividualTransfer(this.selectedDFU, sourceVariant, targetVariant);
-                }
+                // Always call setIndividualTransfer, even if empty (to clear)
+                this.setIndividualTransfer(this.selectedDFU, sourceVariant, targetVariant);
             });
         });
     }
