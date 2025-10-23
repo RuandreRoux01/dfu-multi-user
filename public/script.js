@@ -133,6 +133,7 @@ class DemandTransferApp {
                 
                 // Try multiple column name variations for quantity
                 const openSupply = parseFloat(
+                    row['Receipt Quantity / Requirements Quantity'] ||  // EXACT column name from your file
                     row['Receipt Quantity'] || 
                     row['Requirements Quantity'] || 
                     row['ReceiptQuantity'] ||
