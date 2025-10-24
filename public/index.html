@@ -284,8 +284,16 @@
             });
             
             socket.on('dataCleared', ({ clearedBy }) => {
-                showNotification(`${clearedBy} cleared all data`, 'warning');
-                window.location.reload();
+                showNotification(`${clearedBy} cleared all data. Logging out...`, 'warning');
+                
+                // Disconnect and force page reload to show login
+                if (socket) {
+                    socket.disconnect();
+                }
+                
+                setTimeout(() => {
+                    window.location.href = window.location.href;
+                }, 1500);
             });
             
             appInstance.loadData = async function(file) {
@@ -573,6 +581,37 @@
             } catch (error) {
                 console.error('[LOAD TEAM DATA] Error:', error);
                 showNotification('Error loading data: ' + error.message, 'error');
+            }
+        }
+        async function clearAllData() {
+            if (!confirm('Clear all data? This will log out all users and cannot be undone.')) return;
+            
+            try {
+                await fetch('/api/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userName })
+                });
+                
+                showNotification('All data cleared. Logging out...', 'warning');
+                
+                // Disconnect socket
+                if (socket) {
+                    socket.disconnect();
+                }
+                
+                // Clear all local data
+                userName = null;
+                appInstance = null;
+                
+                // Force page reload to show login modal
+                setTimeout(() => {
+                    window.location.href = window.location.href.split('?')[0];
+                }, 1000);
+                
+            } catch (error) {
+                console.error('Clear error:', error);
+                showNotification('Failed to clear data', 'error');
             }
         }
     </script>

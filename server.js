@@ -549,15 +549,20 @@ app.post('/api/addVariant', async (req, res) => {
 // Clear all data
 app.post('/api/clear', async (req, res) => {
     try {
-        // Delete the entire session document and recreate it fresh
+        console.log('[CLEAR] Clearing all data...');
+        
+        // Delete the entire session document
         await db.collection('sessions').deleteOne({ _id: TEAM_SESSION_ID });
+        
+        // Delete all transfers
         await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
         
-        // Recreate fresh session
+        // Recreate fresh empty session
         await db.collection('sessions').insertOne({
             _id: TEAM_SESSION_ID,
             name: 'Team Session',
             createdAt: new Date(),
+            users: [],  // Empty users array
             dataUploaded: false,
             rawData: null,
             originalRawData: null,
@@ -567,13 +572,19 @@ app.post('/api/clear', async (req, res) => {
                 stockData: {},
                 openSupplyData: {},
                 transitData: {}
-            }
+            },
+            status: 'active'
         });
         
+        console.log('[CLEAR] All data cleared, session reset');
+        
         res.json({ success: true });
+        
+        // Emit to all clients to force disconnect and reload
         io.emit('dataCleared', { clearedBy: req.body.userName });
         
     } catch (error) {
+        console.error('[CLEAR] Error:', error);
         res.status(500).json({ error: error.message });
     }
 });
