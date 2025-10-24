@@ -754,7 +754,10 @@ class DemandTransferApp {
         sourceRecords.forEach(record => {
             const weekNumber = this.toComparableString(record[weekNumberColumn]);
             const sourceLocation = this.toComparableString(record[sourceLocationColumn]);
-            const weekKey = `${weekNumber}-${sourceLocation}`;
+            const calendarWeek = record[calendarWeekColumn];
+            const year = calendarWeek ? new Date(calendarWeek).getFullYear() : 2025;
+            const paddedWeek = String(weekNumber).padStart(2, '0');
+            const weekKey = `${year}-${paddedWeek}-${sourceLocation}`;
             const demand = parseFloat(record[demandColumn]) || 0;
             
             if (!granularData[weekKey]) {
@@ -770,6 +773,18 @@ class DemandTransferApp {
         });
         
         const sortedWeeks = Object.entries(granularData).sort((a, b) => {
+            // Extract year from calendar week
+            const aDate = new Date(a[1].calendarWeek || '2025-01-01');
+            const bDate = new Date(b[1].calendarWeek || '2025-01-01');
+            const aYear = aDate.getFullYear();
+            const bYear = bDate.getFullYear();
+            
+            // Sort by year first
+            if (aYear !== bYear) {
+                return aYear - bYear;
+            }
+            
+            // Then by week number
             const weekA = parseInt(a[1].weekNumber);
             const weekB = parseInt(b[1].weekNumber);
             return weekA - weekB;

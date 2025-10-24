@@ -549,25 +549,26 @@ app.post('/api/addVariant', async (req, res) => {
 // Clear all data
 app.post('/api/clear', async (req, res) => {
     try {
-        await db.collection('sessions').updateOne(
-            { _id: TEAM_SESSION_ID },
-            { 
-                $set: { 
-                    rawData: null,
-                    originalRawData: null,
-                    dataUploaded: false,
-                    variantCycleData: null,
-                    hasVariantCycleData: false,
-                    supplyChainData: {
-                        stockData: {},
-                        openSupplyData: {},
-                        transitData: {}
-                    }
-                }
-            }
-        );
-        
+        // Delete the entire session document and recreate it fresh
+        await db.collection('sessions').deleteOne({ _id: TEAM_SESSION_ID });
         await db.collection('transfers').deleteMany({ sessionId: TEAM_SESSION_ID });
+        
+        // Recreate fresh session
+        await db.collection('sessions').insertOne({
+            _id: TEAM_SESSION_ID,
+            name: 'Team Session',
+            createdAt: new Date(),
+            dataUploaded: false,
+            rawData: null,
+            originalRawData: null,
+            variantCycleData: null,
+            hasVariantCycleData: false,
+            supplyChainData: {
+                stockData: {},
+                openSupplyData: {},
+                transitData: {}
+            }
+        });
         
         res.json({ success: true });
         io.emit('dataCleared', { clearedBy: req.body.userName });
