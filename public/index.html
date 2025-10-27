@@ -54,7 +54,7 @@
                 padding-left: 20px;
                 padding-right: 20px;
             }
-            
+    
             #activeUsersPanel {
                 position: relative;
                 right: auto;
@@ -96,8 +96,8 @@
         <div class="flex justify-between items-start mb-3">
             <h3 class="font-semibold">Active Team Members</h3>
             <div class="text-right text-xs text-gray-400">
-                <p>Version 2.20.0</p>
-                <p>Build: 2025-12-17-all-dfus</p>
+                <p>Version 2.21.0</p>
+                <p>Build: 2025-10-23-network-stock-calc</p>
             </div>
         </div>
         <div id="activeUsersList" class="mb-4 text-sm"></div>
@@ -241,38 +241,10 @@
                 }
             });
             
-            socket.on('cycleDataUploaded', ({ uploadedBy }) => {
-                if (uploadedBy !== userName) {
-                    showNotification(`${uploadedBy} uploaded cycle dates`, 'info');
+            socket.on('transferExecuted', ({ dfuCode, executedBy }) => {
+                if (executedBy !== userName) {
+                    showNotification(`${executedBy} executed transfer for DFU ${dfuCode}`, 'info');
                     loadTeamData();
-                }
-            });
-            
-            socket.on('dataUpdated', ({ dfuCode, updatedBy }) => {
-                if (updatedBy !== userName) {
-                    showNotification(`${updatedBy} updated DFU ${dfuCode}`, 'info');
-                    loadTeamData();
-                }
-            });
-            
-            socket.on('transferUndone', ({ dfuCode, undoneBy, remainingTransfers, requiresReload }) => {
-                if (undoneBy !== userName) {
-                    showNotification(`${undoneBy} undid transfer for DFU ${dfuCode}`, 'warning');
-                    
-                    if (appInstance && appInstance.completedTransfers) {
-                        delete appInstance.completedTransfers[dfuCode];
-                        delete appInstance.transfers[dfuCode];
-                        delete appInstance.bulkTransfers[dfuCode];
-                        delete appInstance.granularTransfers[dfuCode];
-                        
-                        if (remainingTransfers) {
-                            appInstance.completedTransfers = remainingTransfers;
-                        }
-                    }
-                    
-                    if (requiresReload) {
-                        loadTeamData();
-                    }
                 }
             });
             
@@ -283,17 +255,30 @@
                 }
             });
             
+            socket.on('transferUndone', ({ dfuCode, undoneBy, restoredRecords }) => {
+                if (undoneBy !== userName) {
+                    showNotification(`${undoneBy} undid transfer for DFU ${dfuCode} (${restoredRecords} records restored)`, 'info');
+                    loadTeamData();
+                }
+            });
+            
             socket.on('dataCleared', ({ clearedBy }) => {
                 showNotification(`${clearedBy} cleared all data. Logging out...`, 'warning');
                 
-                // Disconnect and force page reload to show login
                 if (socket) {
                     socket.disconnect();
                 }
                 
                 setTimeout(() => {
-                    window.location.href = window.location.href;
+                    window.location.href = window.location.href.split('?')[0];
                 }, 1500);
+            });
+            
+            socket.on('supplyChainDataUpdated', ({ type, uploadedBy }) => {
+                if (uploadedBy !== userName) {
+                    showNotification(`${uploadedBy} updated ${type} data`, 'info');
+                    loadTeamData();
+                }
             });
             
             appInstance.loadData = async function(file) {
@@ -375,31 +360,46 @@
             };
             
             appInstance.undoTransfer = async function(dfuCode) {
+                if (!confirm(`Undo transfer for DFU ${dfuCode}? This will restore original data from the database.`)) {
+                    return;
+                }
+                
                 try {
-                    showNotification('Undoing transfer - please wait...', 'info');
-                    
                     const response = await fetch('/api/undoTransfer', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ dfuCode, userName })
+                        body: JSON.stringify({ 
+                            dfuCode: dfuCode,
+                            userName: userName
+                        })
                     });
                     
                     if (response.ok) {
                         const result = await response.json();
                         
-                        // Clear local transfer state immediately
-                        delete this.completedTransfers[dfuCode];
-                        delete this.transfers[dfuCode];
-                        delete this.bulkTransfers[dfuCode];
-                        delete this.granularTransfers[dfuCode];
-                        delete this.lastExecutionSummary[dfuCode];
+                        // Clear local transfer data for this DFU
+                        if (this.completedTransfers) {
+                            delete this.completedTransfers[dfuCode];
+                        }
+                        if (this.transfers) {
+                            delete this.transfers[dfuCode];
+                        }
+                        if (this.bulkTransfers) {
+                            delete this.bulkTransfers[dfuCode];
+                        }
+                        if (this.granularTransfers) {
+                            delete this.granularTransfers[dfuCode];
+                        }
+                        if (this.lastExecutionSummary) {
+                            delete this.lastExecutionSummary[dfuCode];
+                        }
                         
                         // Update with remaining transfers from server
                         if (result.remainingTransfers) {
                             this.completedTransfers = result.remainingTransfers;
                         }
                         
-                        showNotification('Transfer undone successfully - refreshing data...', 'success');
+                        showNotification(`Undo successful - ${result.restoredRecords} records restored. Refreshing...`, 'success');
                         
                         // Force complete data reload from server
                         setTimeout(async () => {
@@ -425,7 +425,6 @@
             
             appInstance.exportData = async function() {
                 try {
-                    // Helper function to calculate date from week number
                     function getDateFromWeekNumber(year, weekNumber) {
                         const jan1 = new Date(year, 0, 1);
                         const jan1Day = jan1.getDay();
@@ -439,22 +438,18 @@
                     const formattedData = this.rawData.map(record => {
                         const formatted = { ...record };
                         
-                        // Fix Calendar.week based on Week Number
                         if (formatted['Week Number']) {
                             const weekNumberStr = String(formatted['Week Number']);
                             
-                            // Extract week and year from format like "2_2026" or just "2"
                             let weekNum, year;
                             
                             if (weekNumberStr.includes('_')) {
-                                // Format: "2_2026"
                                 const parts = weekNumberStr.split('_');
                                 weekNum = parseInt(parts[0]);
                                 year = parseInt(parts[1]);
                             } else {
-                                // Format: just "2" - try to get year from existing Calendar.week
                                 weekNum = parseInt(weekNumberStr);
-                                year = 2025; // Default fallback
+                                year = 2025;
                                 
                                 if (formatted['Calendar.week']) {
                                     const existingDate = new Date(formatted['Calendar.week']);
@@ -501,88 +496,101 @@
                     const response = await fetch('/api/addVariant', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ 
-                            dfuCode, 
+                        body: JSON.stringify({
+                            dfuCode,
                             variantCode: variantCode.trim(),
-                            userName 
+                            userName
                         })
                     });
                     
                     const result = await response.json();
                     
                     if (result.success) {
-                        showNotification(`Added variant ${variantCode} to DFU ${dfuCode}`, 'success');
+                        showNotification(`Variant ${variantCode} added to DFU ${dfuCode}`, 'success');
                         await loadTeamData();
                     } else {
-                        showNotification(result.error || 'Failed to add variant', 'error');
+                        showNotification('Failed to add variant: ' + result.error, 'error');
                     }
                 } catch (error) {
                     showNotification('Error adding variant', 'error');
                 }
             };
-            
-            const originalSelectDFU = appInstance.selectDFU.bind(appInstance);
-            appInstance.selectDFU = function(dfuCode) {
-                preserveScrollPosition(() => {
-                    originalSelectDFU(dfuCode);
-                });
-            };
-            
-            appInstance.showNotification = showNotification;
         }
         
         async function loadTeamData() {
-            if (!appInstance) return;
-            
             try {
+                console.log('[LOAD TEAM DATA] Fetching data from server...');
+                
                 const response = await fetch('/api/session/data');
                 const data = await response.json();
                 
                 console.log('[LOAD TEAM DATA] Received:', data);
                 
-                if (data.rawData && data.rawData.length > 0) {
-                    appInstance.rawData = data.rawData;
-                    appInstance.originalRawData = data.originalRawData || JSON.parse(JSON.stringify(data.rawData));
+                if (data.success && data.session) {
+                    const session = data.session;
                     
-                    // Load supply chain data
-                    if (data.supplyChainData) {
-                        appInstance.stockData = data.supplyChainData.stockData || {};
-                        appInstance.openSupplyData = data.supplyChainData.openSupplyData || {};
-                        appInstance.transitData = data.supplyChainData.transitData || {};
+                    if (session.supplyChainData) {
+                        if (session.supplyChainData.stockData && Object.keys(session.supplyChainData.stockData).length > 0) {
+                            appInstance.stockData = session.supplyChainData.stockData;
+                            appInstance.hasStockData = true;
+                            console.log('[LOAD TEAM DATA] Loaded stock data:', Object.keys(appInstance.stockData).length, 'items');
+                        }
                         
-                        appInstance.hasStockData = Object.keys(appInstance.stockData).length > 0;
-                        appInstance.hasOpenSupplyData = Object.keys(appInstance.openSupplyData).length > 0;
-                        appInstance.hasTransitData = Object.keys(appInstance.transitData).length > 0;
+                        if (session.supplyChainData.openSupplyData && Object.keys(session.supplyChainData.openSupplyData).length > 0) {
+                            appInstance.openSupplyData = session.supplyChainData.openSupplyData;
+                            appInstance.hasOpenSupplyData = true;
+                            console.log('[LOAD TEAM DATA] Loaded open supply data:', Object.keys(appInstance.openSupplyData).length, 'items');
+                        }
                         
-                        console.log('[LOAD TEAM DATA] Loaded supply chain data:', {
-                            stock: Object.keys(appInstance.stockData).length,
-                            openSupply: Object.keys(appInstance.openSupplyData).length,
-                            transit: Object.keys(appInstance.transitData).length
+                        if (session.supplyChainData.transitData && Object.keys(session.supplyChainData.transitData).length > 0) {
+                            appInstance.transitData = session.supplyChainData.transitData;
+                            appInstance.hasTransitData = true;
+                            console.log('[LOAD TEAM DATA] Loaded transit data:', Object.keys(appInstance.transitData).length, 'items');
+                        }
+                    }
+                    
+                    if (session.dataUploaded && session.rawData && session.rawData.length > 0) {
+                        console.log('[LOAD TEAM DATA] Data loaded and rendered successfully');
+                        
+                        appInstance.rawData = session.rawData;
+                        appInstance.originalRawData = JSON.parse(JSON.stringify(session.rawData));
+                        originalRawDataBackup = JSON.parse(JSON.stringify(session.rawData));
+                        
+                        if (session.completedTransfers) {
+                            appInstance.completedTransfers = session.completedTransfers;
+                            
+                            Object.keys(session.completedTransfers).forEach(dfuCode => {
+                                if (!appInstance.transfers) appInstance.transfers = {};
+                                appInstance.transfers[dfuCode] = true;
+                            });
+                        }
+                        
+                        if (session.hasVariantCycleData && session.variantCycleData) {
+                            appInstance.variantCycleDates = session.variantCycleData;
+                            appInstance.hasVariantCycleData = true;
+                        } else {
+                            appInstance.variantCycleDates = {};
+                            appInstance.hasVariantCycleData = false;
+                        }
+                        
+                        preserveScrollPosition(() => {
+                            appInstance.processMultiVariantDFUs(session.rawData);
+                            appInstance.isProcessed = true;
+                            appInstance.render();
                         });
+                    } else {
+                        if (appInstance) {
+                            appInstance.variantCycleDates = {};
+                            appInstance.hasVariantCycleData = false;
+                            appInstance.render();
+                        }
                     }
-                    
-                    if (data.completedTransfers) {
-                        appInstance.completedTransfers = data.completedTransfers;
-                    }
-                    
-                    if (data.variantCycleData) {
-                        appInstance.variantCycleDates = data.variantCycleData;
-                        appInstance.hasVariantCycleData = data.hasVariantCycleData || false;
-                    }
-                    
-                    appInstance.processMultiVariantDFUs(data.rawData);
-                    appInstance.isProcessed = true;
-                    appInstance.render();
-                    
-                    console.log('[LOAD TEAM DATA] Data loaded and rendered successfully');
-                } else {
-                    console.log('[LOAD TEAM DATA] No data available');
                 }
             } catch (error) {
-                console.error('[LOAD TEAM DATA] Error:', error);
-                showNotification('Error loading data: ' + error.message, 'error');
+                console.error('Error loading data:', error);
             }
         }
+        
         async function clearAllData() {
             if (!confirm('Clear all data? This will log out all users and cannot be undone.')) return;
             
@@ -595,16 +603,13 @@
                 
                 showNotification('All data cleared. Logging out...', 'warning');
                 
-                // Disconnect socket
                 if (socket) {
                     socket.disconnect();
                 }
                 
-                // Clear all local data
                 userName = null;
                 appInstance = null;
                 
-                // Force page reload to show login modal
                 setTimeout(() => {
                     window.location.href = window.location.href.split('?')[0];
                 }, 1000);
