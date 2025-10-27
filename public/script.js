@@ -876,10 +876,21 @@ class DemandTransferApp {
                 const targetVariant = individualTransfers[sourceVariant];
                 
                 // Skip if granular configured
-                if (granularTransfers[sourceVariant] && Object.keys(granularTransfers[sourceVariant]).length > 0) {
-                    console.log(`Skip ${sourceVariant} - has granular`);
-                    return;
+                // Skip ONLY if granular weeks are actually SELECTED
+                let hasSelectedGranularWeeks = false;
+                if (granularTransfers[sourceVariant]) {
+                    Object.keys(granularTransfers[sourceVariant]).forEach(tv => {
+                        const weeks = granularTransfers[sourceVariant][tv];
+                        if (Object.values(weeks).some(w => w.selected)) {
+                            hasSelectedGranularWeeks = true;
+                        }
+                    });
                 }
+
+                if (hasSelectedGranularWeeks) {
+                    console.log(`Skip ${sourceVariant} - has selected granular weeks`);
+                    return;
+            }
                 
                 if (sourceVariant !== targetVariant) {
                     const sourceRecords = dfuRecords.filter(r => 
