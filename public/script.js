@@ -1141,33 +1141,39 @@ class DemandTransferApp {
                                 <div>
                                     <input type="file" accept=".xlsx,.xls" class="file-input" id="fileInput">
                                     <p class="text-sm text-gray-500 mt-2">Formats: .xlsx, .xls</p>
+                                    <div class="mt-3 p-3 bg-amber-50 border border-amber-300 rounded-lg">
+                                        <p class="text-sm text-amber-800">
+                                            <strong>⚠️ Important:</strong> Upload all supply chain files (Stock, Open Supply, Transit) and Cycle Dates BEFORE uploading Total Demand. The system will process the data immediately.
+                                        </p>
+                                    </div>
                                 </div>
                                 
                                 <div class="border-t pt-4 mt-4 space-y-3">
                                     <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Supply Chain Data</h3>
                                     
                                     <label class="block">
-                                        <span class="text-sm text-gray-600">Stock (SOH):</span>
+                                        <span class="text-sm text-gray-600">Upload Stock RRP4 (SOH):</span>
                                         <input type="file" accept=".xlsx,.xls" class="file-input text-sm" id="stockFileInput">
-                                        ${this.hasStockData ? '<span class="text-xs text-green-600">✓</span>' : ''}
+                                        ${this.hasStockData ? '<span class="text-xs text-green-600">✓ Loaded</span>' : ''}
                                     </label>
                                     
                                     <label class="block">
-                                        <span class="text-sm text-gray-600">Open Supply:</span>
+                                        <span class="text-sm text-gray-600">Production RRP4 (Open Supply):</span>
                                         <input type="file" accept=".xlsx,.xls" class="file-input text-sm" id="openSupplyFileInput">
-                                        ${this.hasOpenSupplyData ? '<span class="text-xs text-green-600">✓</span>' : ''}
+                                        ${this.hasOpenSupplyData ? '<span class="text-xs text-green-600">✓ Loaded</span>' : ''}
                                     </label>
                                     
                                     <label class="block">
-                                        <span class="text-sm text-gray-600">In Transit:</span>
+                                        <span class="text-sm text-gray-600">Transport receipts Confirmed RRP4 only orders (In Transit):</span>
                                         <input type="file" accept=".xlsx,.xls" class="file-input text-sm" id="transitFileInput">
-                                        ${this.hasTransitData ? '<span class="text-xs text-green-600">✓</span>' : ''}
+                                        ${this.hasTransitData ? '<span class="text-xs text-green-600">✓ Loaded</span>' : ''}
                                     </label>
                                 </div>
                                 
                                 <div class="border-t pt-4">
                                     <h3 class="text-sm font-medium text-gray-700 mb-2">Optional: Variant Cycle Dates</h3>
                                     <input type="file" accept=".xlsx,.xls" class="file-input" id="cycleFileInput">
+                                    ${this.hasVariantCycleData ? '<span class="text-xs text-green-600 ml-2">✓ Loaded</span>' : ''}
                                     <p class="text-xs text-gray-500 mt-1">DFU, Part Code, SOS, EOS columns</p>
                                 </div>
                             </div>
