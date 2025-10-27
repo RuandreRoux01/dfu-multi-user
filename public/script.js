@@ -529,9 +529,19 @@ class DemandTransferApp {
     }
     
     selectDFU(dfuCode) {
+        // Save scroll position before render
+        const dfuList = document.querySelector('.bg-gray-50.rounded-lg.p-6 .overflow-y-auto');
+        const scrollPos = dfuList ? dfuList.scrollTop : 0;
+        
         this.selectedDFU = dfuCode;
         this.render();
-        setTimeout(() => this.ensureGranularContainers(), 100);
+        
+        // Restore scroll position after render
+        setTimeout(() => {
+            const newDfuList = document.querySelector('.bg-gray-50.rounded-lg.p-6 .overflow-y-auto');
+            if (newDfuList) newDfuList.scrollTop = scrollPos;
+            this.ensureGranularContainers();
+        }, 10);
     }
     
     selectBulkTarget(dfuCode, targetVariant) {
