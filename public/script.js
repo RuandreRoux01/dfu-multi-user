@@ -1056,8 +1056,11 @@ class DemandTransferApp {
         try {
             const wb = XLSX.utils.book_new();
             
-            const formattedData = this.rawData.map(record => {
-                const formatted = { ...record };
+            const formattedData = this.rawData.map((record, index) => {
+                const formatted = { 
+                    OrderNumber: index + 1,
+                    ...record 
+                };
                 
                 if (formatted['Week Number']) {
                     const weekNumStr = String(formatted['Week Number']).trim();
