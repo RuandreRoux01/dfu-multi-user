@@ -1053,14 +1053,15 @@ class DemandTransferApp {
     }
     
     async exportData() {
+        console.log('🔴 EXPORT STARTED - Testing OrderNumber');
+        
         try {
             const wb = XLSX.utils.book_new();
             
+            console.log('🔴 Total records to export:', this.rawData.length);
+            
             const formattedData = this.rawData.map((record, index) => {
-                const formatted = {
-                    OrderNumber: index + 1,  // Add as first column
-                    ...record
-                };
+                const formatted = { ...record };
                 
                 if (formatted['Week Number']) {
                     const weekNumStr = String(formatted['Week Number']).trim();
@@ -1079,16 +1080,30 @@ class DemandTransferApp {
                 
                 return formatted;
             });
-            // Add this line to check
-            console.log('First row with OrderNumber:', formattedData[0]);
             
-            const ws = XLSX.utils.json_to_sheet(formattedData);
+            // Add OrderNumber as FIRST property
+            const dataWithOrderNumber = formattedData.map((row, index) => {
+                const newRow = {
+                    OrderNumber: index + 1
+                };
+                // Add all other properties
+                Object.keys(row).forEach(key => {
+                    newRow[key] = row[key];
+                });
+                return newRow;
+            });
+            
+            console.log('🔴 First 3 rows with OrderNumber:', dataWithOrderNumber.slice(0, 3));
+            console.log('🔴 Column names:', Object.keys(dataWithOrderNumber[0]));
+            
+            const ws = XLSX.utils.json_to_sheet(dataWithOrderNumber);
             XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
             XLSX.writeFile(wb, 'DFU_Transfer_Updated.xlsx');
             
+            console.log('🔴 EXPORT COMPLETED');
             this.showNotification('Data exported');
         } catch (error) {
-            console.error('Export error:', error);
+            console.error('🔴 Export error:', error);
             this.showNotification('Export failed: ' + error.message, 'error');
         }
     }
