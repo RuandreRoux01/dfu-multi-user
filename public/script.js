@@ -1053,6 +1053,7 @@ class DemandTransferApp {
     }
     
     async exportData() {
+        alert('Export function called!');
         console.log('🔴 EXPORT STARTED - Testing OrderNumber');
         
         try {
