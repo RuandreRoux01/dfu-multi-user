@@ -1057,9 +1057,9 @@ class DemandTransferApp {
             const wb = XLSX.utils.book_new();
             
             const formattedData = this.rawData.map((record, index) => {
-                const formatted = { 
-                    OrderNumber: index + 1,
-                    ...record 
+                const formatted = {
+                    OrderNumber: index + 1,  // Add as first column
+                    ...record
                 };
                 
                 if (formatted['Week Number']) {
@@ -1079,6 +1079,8 @@ class DemandTransferApp {
                 
                 return formatted;
             });
+            // Add this line to check
+            console.log('First row with OrderNumber:', formattedData[0]);
             
             const ws = XLSX.utils.json_to_sheet(formattedData);
             XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
