@@ -671,14 +671,20 @@ class DemandTransferApp {
         });
         
         const sortedWeeks = Object.entries(granularData).sort((a, b) => {
-            const aDate = new Date(a[1].calendarWeek || '2025-01-01');
-            const bDate = new Date(b[1].calendarWeek || '2025-01-01');
-            const aYear = aDate.getFullYear();
-            const bYear = bDate.getFullYear();
+            // Extract year and week from "week_year" format (e.g., "12_2026")
+            const [weekA, yearA] = a[1].weekNumber.split('_');
+            const [weekB, yearB] = b[1].weekNumber.split('_');
             
-            if (aYear !== bYear) return aYear - bYear;
+            const yearAInt = parseInt(yearA) || 2025;
+            const yearBInt = parseInt(yearB) || 2025;
             
-            return parseInt(a[1].weekNumber) - parseInt(b[1].weekNumber);
+            // Sort by year first
+            if (yearAInt !== yearBInt) {
+                return yearAInt - yearBInt;
+            }
+            
+            // Then by week number
+            return parseInt(weekA) - parseInt(weekB);
         });
         
         return `
