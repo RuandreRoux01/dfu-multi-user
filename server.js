@@ -535,8 +535,15 @@ app.post('/api/clear', async (req, res) => {
 app.post('/api/export', async (req, res) => {
     try {
         const { rawData } = req.body;
+        
+        // Add OrderNumber as first column
+        const dataWithOrderNumber = (rawData || []).map((row, index) => ({
+            OrderNumber: index + 1,
+            ...row
+        }));
+        
         const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.json_to_sheet(rawData || []);
+        const ws = XLSX.utils.json_to_sheet(dataWithOrderNumber);
         XLSX.utils.book_append_sheet(wb, ws, 'Updated Demand');
         
         const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
